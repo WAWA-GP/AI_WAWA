@@ -10,8 +10,9 @@ import asyncio
 import json
 import logging
 import uvicorn
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from services.pronunciation_analysis_service import pronunciation_service
 load_dotenv()
 
 # 서비스 임포트
@@ -20,6 +21,7 @@ try:
     from services.speech_recognition_service import stt_service
     from services.text_to_speech_service import tts_service
     from services.openai_service import openai_service
+    from services.level_test_service import level_test_service
 except ImportError:
     print("⚠️ 서비스 모듈을 찾을 수 없습니다. 경로를 확인해주세요.")
     import sys
@@ -35,8 +37,8 @@ logger = logging.getLogger(__name__)
 # FastAPI 앱 생성
 app = FastAPI(
     title="AI Language Learning API",
-    description="AI 기반 언어 학습 대화 시스템 - OpenAI GPT-4 지원",
-    version="1.5.0"
+    description="AI 기반 언어 학습 대화 시스템 - OpenAI GPT-4 지원 + 레벨 테스트",
+    version="2.0.0"
 )
 
 # CORS 설정
@@ -76,16 +78,476 @@ class ConversationResponse(BaseModel):
     data: Optional[Dict] = None
     error: Optional[str] = None
 
+class LevelTestStartRequest(BaseModel):
+    user_id: str
+    language: str = "english"
+    test_type: str = "adaptive"  # adaptive, full, quick
+
+class LevelTestAnswerRequest(BaseModel):
+    session_id: str
+    question_id: str
+    answer: str
+
+class PronunciationAnalysisRequest(BaseModel):
+    audio_base64: str
+    target_text: str
+    user_level: str = "B1"
+    language: str = "en"
+
+class PronunciationComparisonRequest(BaseModel):
+    audio_base64: str
+    reference_word: str
+    user_level: str = "B1"
+    language: str = "en"
+
+class PronunciationResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Dict] = None
+    error: Optional[str] = None
+
+# === 도우미 함수들 (API 엔드포인트보다 먼저 정의) ===
+
+async def generate_personalized_learning_path(level: str, weak_areas: List[str]) -> Dict:
+    """개인화된 학습 경로 생성"""
+    
+    # 레벨별 기본 커리큘럼
+    base_curriculum = {
+        "A1": {
+            "weeks": 8,
+            "topics": ["Basic greetings", "Numbers", "Family", "Food", "Colors", "Daily routine"],
+            "focus_skills": ["vocabulary", "basic_grammar"]
+        },
+        "A2": {
+            "weeks": 10,
+            "topics": ["Past experiences", "Future plans", "Shopping", "Travel", "Health", "Weather"],
+            "focus_skills": ["past_tense", "future_tense", "conversation"]
+        },
+        "B1": {
+            "weeks": 12,
+            "topics": ["Work", "Education", "Technology", "Environment", "Culture", "Relationships"],
+            "focus_skills": ["complex_grammar", "reading_comprehension"]
+        },
+        "B2": {
+            "weeks": 14,
+            "topics": ["Business", "Academic writing", "Debates", "Literature", "Science", "Politics"],
+            "focus_skills": ["writing", "critical_thinking"]
+        },
+        "C1": {
+            "weeks": 16,
+            "topics": ["Advanced writing", "Professional communication", "Academic research", "Nuanced expression"],
+            "focus_skills": ["advanced_writing", "formal_communication"]
+        },
+        "C2": {
+            "weeks": 18,
+            "topics": ["Native-level expression", "Specialized vocabulary", "Cultural nuances", "Professional expertise"],
+            "focus_skills": ["perfection", "specialization"]
+        }
+    }
+    
+    curriculum = base_curriculum.get(level, base_curriculum["B1"])
+    
+    # 약점에 따른 커리큘럼 조정
+    if weak_areas:
+        # 약점 영역에 더 많은 시간 할당
+        for week in range(curriculum["weeks"]):
+            if week % 3 == 0:  # 매 3주마다 약점 집중 주간
+                curriculum[f"week_{week+1}_focus"] = f"Intensive {weak_areas[0]} practice"
+    
+    return curriculum
+
+async def get_first_lesson_for_level(level: str, weak_areas: List[str]) -> Dict:
+    """레벨과 약점에 맞는 첫 번째 레슨"""
+    
+    # 약점이 있으면 해당 영역부터 시작
+    if weak_areas:
+        primary_focus = weak_areas[0]
+    else:
+        primary_focus = "vocabulary"  # 기본값
+    
+    lesson_topics = {
+        "A1": {
+            "vocabulary": "Essential everyday words (100 most common words)",
+            "grammar": "Basic sentence structure (Subject + Verb + Object)",
+            "reading": "Simple texts about daily life",
+            "listening": "Basic greetings and introductions"
+        },
+        "A2": {
+            "vocabulary": "Expanded vocabulary (300+ words for common situations)",
+            "grammar": "Past and future tenses",
+            "reading": "Short stories and simple news",
+            "listening": "Conversations about familiar topics"
+        },
+        "B1": {
+            "vocabulary": "Academic and professional vocabulary",
+            "grammar": "Complex sentence structures",
+            "reading": "News articles and opinion pieces",
+            "listening": "Podcasts and lectures"
+        },
+        "B2": {
+            "vocabulary": "Advanced vocabulary and idioms",
+            "grammar": "Advanced grammar and style",
+            "reading": "Literature and academic texts",
+            "listening": "Movies and debates"
+        }
+    }
+    
+    topic = lesson_topics.get(level, lesson_topics["A2"]).get(primary_focus, "General practice")
+    
+    return {
+        "lesson_id": f"lesson_1_{level}_{primary_focus}",
+        "title": f"{level} Level: {topic}",
+        "focus_area": primary_focus,
+        "estimated_duration": "15-20 minutes",
+        "lesson_type": "interactive_practice",
+        "preview": f"Let's start with {primary_focus} practice at {level} level!"
+    }
+
+def generate_daily_goals(level: str) -> List[str]:
+    """일일 학습 목표 생성"""
+    goals_by_level = {
+        "A1": [
+            "Learn 5 new basic words",
+            "Practice simple sentences for 10 minutes",
+            "Complete 1 grammar exercise"
+        ],
+        "A2": [
+            "Learn 7 new words with examples",
+            "Practice conversation for 15 minutes", 
+            "Read one short article"
+        ],
+        "B1": [
+            "Learn 10 new vocabulary words",
+            "Write a short paragraph",
+            "Listen to a 5-minute audio clip"
+        ],
+        "B2": [
+            "Study advanced grammar for 20 minutes",
+            "Read and summarize a news article",
+            "Practice speaking on a given topic"
+        ],
+        "C1": [
+            "Analyze complex texts for 30 minutes",
+            "Practice formal writing",
+            "Engage in advanced discussions"
+        ],
+        "C2": [
+            "Perfect nuanced language use",
+            "Study specialized vocabulary",
+            "Practice professional presentations"
+        ]
+    }
+    
+    return goals_by_level.get(level, goals_by_level["B1"])
+
+def generate_weekly_plan(level: str, weak_areas: List[str]) -> Dict:
+    """주간 학습 계획"""
+    
+    base_plan = {
+        "monday": "Vocabulary focus",
+        "tuesday": "Grammar practice", 
+        "wednesday": "Reading comprehension",
+        "thursday": "Listening skills",
+        "friday": "Speaking practice",
+        "saturday": "Writing exercises",
+        "sunday": "Review and assessment"
+    }
+    
+    # 약점 영역에 추가 시간 할당
+    if weak_areas:
+        for i, weak_area in enumerate(weak_areas[:2]):  # 최대 2개 약점
+            day = ["tuesday", "thursday"][i % 2]
+            base_plan[day] += f" + Extra {weak_area} practice"
+    
+    return base_plan
+
+def generate_milestones(level: str) -> List[Dict]:
+    """학습 마일스톤 목표"""
+    
+    milestones_by_level = {
+        "A1": [
+            {"week": 2, "goal": "Complete basic vocabulary (100 words)", "test": "vocabulary_quiz"},
+            {"week": 4, "goal": "Form simple sentences", "test": "sentence_formation"},
+            {"week": 6, "goal": "Have basic conversations", "test": "conversation_practice"},
+            {"week": 8, "goal": "Ready for A2 level", "test": "level_progression"}
+        ],
+        "A2": [
+            {"week": 3, "goal": "Master past tense", "test": "grammar_test"},
+            {"week": 6, "goal": "Read simple stories", "test": "reading_comprehension"},
+            {"week": 8, "goal": "Express future plans", "test": "speaking_assessment"},
+            {"week": 10, "goal": "Ready for B1 level", "test": "level_progression"}
+        ],
+        "B1": [
+            {"week": 4, "goal": "Understand complex texts", "test": "reading_assessment"},
+            {"week": 8, "goal": "Express opinions clearly", "test": "speaking_test"},
+            {"week": 12, "goal": "Ready for B2 level", "test": "comprehensive_test"}
+        ]
+    }
+    
+    return milestones_by_level.get(level, milestones_by_level["A2"])
+
+def analyze_response_patterns(responses: List[Dict]) -> Dict:
+    """응답 패턴 분석"""
+    if not responses:
+        return {}
+    
+    correct_answers = sum(1 for r in responses if r.get("correct", False))
+    total_answers = len(responses)
+    
+    # 스킬별 정답률
+    skill_accuracy = {}
+    for response in responses:
+        skill = response.get("skill", "unknown")
+        if skill not in skill_accuracy:
+            skill_accuracy[skill] = {"correct": 0, "total": 0}
+        
+        skill_accuracy[skill]["total"] += 1
+        if response.get("correct", False):
+            skill_accuracy[skill]["correct"] += 1
+    
+    # 정답률 계산
+    for skill in skill_accuracy:
+        total = skill_accuracy[skill]["total"]
+        correct = skill_accuracy[skill]["correct"]
+        skill_accuracy[skill]["accuracy"] = round(correct / total * 100, 1) if total > 0 else 0
+    
+    return {
+        "overall_accuracy": round(correct_answers / total_answers * 100, 1),
+        "skill_accuracy": skill_accuracy,
+        "consistency": calculate_response_consistency(responses)
+    }
+
+def analyze_response_times(responses: List[Dict]) -> Dict:
+    """응답 시간 분석 (실제로는 타임스탬프 기반)"""
+    # 실제 구현에서는 각 응답의 시간 정보를 사용
+    return {
+        "average_time": "45 seconds",
+        "fastest_response": "12 seconds", 
+        "slowest_response": "2 minutes",
+        "time_trend": "improving"  # getting faster/slower/consistent
+    }
+
+def analyze_difficulty_progression(responses: List[Dict]) -> Dict:
+    """난이도 진행 분석"""
+    if not responses:
+        return {}
+    
+    # 레벨별 응답 분포
+    level_distribution = {}
+    for response in responses:
+        level = response.get("level", "unknown")
+        level_distribution[level] = level_distribution.get(level, 0) + 1
+    
+    return {
+        "level_distribution": level_distribution,
+        "adaptive_progression": "successful",  # successful/struggled/inconsistent
+        "final_confidence": "high"  # high/medium/low
+    }
+
+def calculate_response_consistency(responses: List[Dict]) -> str:
+    """응답 일관성 계산"""
+    if len(responses) < 3:
+        return "insufficient_data"
+    
+    scores = [r.get("score", 0) for r in responses]
+    variance = sum((score - sum(scores)/len(scores))**2 for score in scores) / len(scores)
+    
+    if variance < 100:
+        return "highly_consistent"
+    elif variance < 400:
+        return "moderately_consistent" 
+    else:
+        return "inconsistent"
+    
+# === 도우미 함수들 ===
+
+def _get_grade_from_score(score: float) -> str:
+    """점수를 등급으로 변환"""
+    if score >= 90:
+        return "A"
+    elif score >= 80:
+        return "B"
+    elif score >= 70:
+        return "C"
+    elif score >= 60:
+        return "D"
+    else:
+        return "F"
+
+def _get_improvement_priority(result) -> List[str]:
+    """개선 우선순위 결정"""
+    scores = {
+        'pitch': result.pitch_score,
+        'rhythm': result.rhythm_score,
+        'stress': result.stress_score,
+        'fluency': result.fluency_score
+    }
+    
+    # 점수가 낮은 순서로 정렬
+    sorted_areas = sorted(scores.items(), key=lambda x: x[1])
+    
+    priority = []
+    for area, score in sorted_areas:
+        if score < 80:
+            if area == 'pitch':
+                priority.append("억양 패턴 연습")
+            elif area == 'rhythm':
+                priority.append("말하기 리듬 개선")
+            elif area == 'stress':
+                priority.append("강세 위치 연습")
+            elif area == 'fluency':
+                priority.append("유창성 향상")
+    
+    return priority[:3]  # 상위 3개만
+
+def _calculate_similarity(comparison_result: Dict) -> float:
+    """발음 유사도 계산"""
+    try:
+        user_scores = comparison_result.get('user_pronunciation', {})
+        overall_score = user_scores.get('overall_score', 60)
+        
+        # 100점 기준을 유사도 퍼센트로 변환
+        similarity = min(100, max(0, overall_score))
+        return round(similarity, 1)
+    except:
+        return 60.0
+
+def _get_practice_recommendation(comparison_result: Dict) -> str:
+    """연습 추천사항 생성"""
+    
+    improvement_areas = comparison_result.get('improvement_areas', [])
+    
+    if not improvement_areas:
+        return "발음이 매우 좋습니다! 현재 수준을 유지하세요."
+    
+    recommendations = {
+        'pitch': "억양 연습: 문장의 중요한 부분에서 목소리 높낮이를 조절해보세요.",
+        'rhythm': "리듬 연습: 일정한 속도로 말하는 연습을 해보세요.",
+        'stress': "강세 연습: 중요한 음절을 더 강하게 발음해보세요.",
+        'fluency': "유창성 연습: 끊어지지 않고 자연스럽게 말하는 연습을 해보세요."
+    }
+    
+    main_area = improvement_areas[0] if improvement_areas else 'pitch'
+    return recommendations.get(main_area, "발음 연습을 계속 해보세요.")
+
+def _get_pronunciation_tips(word: str, reference_info: Dict) -> List[str]:
+    """발음 팁 생성"""
+    
+    tips = []
+    
+    if reference_info:
+        syllables = reference_info.get('expected_syllables', 1)
+        
+        if syllables == 1:
+            tips.append("단음절 단어이므로 명확하게 발음하세요.")
+        elif syllables >= 3:
+            tips.append("다음절 단어이므로 강세 위치에 주의하세요.")
+        
+        stress_pattern = reference_info.get('stress_pattern', [])
+        if stress_pattern and len(stress_pattern) > 1:
+            stress_pos = stress_pattern.index(1) + 1 if 1 in stress_pattern else 1
+            tips.append(f"{stress_pos}번째 음절에 강세를 두세요.")
+    
+    # 단어별 특별 팁
+    word_tips = {
+        'water': "미국식 발음에서는 't'를 'd'처럼 발음합니다.",
+        'better': "두 번째 'e'는 약하게 발음하세요.",
+        'computer': "com-PU-ter로 두 번째 음절에 강세를 두세요.",
+        'important': "im-POR-tant로 두 번째 음절에 강세를 두세요."
+    }
+    
+    if word.lower() in word_tips:
+        tips.append(word_tips[word.lower()])
+    
+    if not tips:
+        tips.append("천천히 명확하게 발음해보세요.")
+    
+    return tips
+
+def _generate_practice_phrases(word: str) -> List[str]:
+    """연습 문장 생성"""
+    
+    phrases = [
+        f"I can say '{word}' clearly.",
+        f"The word '{word}' is important.",
+        f"Let me practice '{word}' again."
+    ]
+    
+    # 단어별 특별 문장들
+    word_phrases = {
+        'water': [
+            "I drink water every day.",
+            "The water is very cold.",
+            "Can I have some water please?"
+        ],
+        'computer': [
+            "I use my computer for work.",
+            "The computer is very fast.",
+            "My new computer is great."
+        ],
+        'important': [
+            "This is very important.",
+            "Education is important for everyone.",
+            "It's important to practice daily."
+        ]
+    }
+    
+    if word.lower() in word_phrases:
+        return word_phrases[word.lower()]
+    
+    return phrases
+
+def _assess_difficulty(word: str, reference_info: Dict) -> str:
+    """단어 발음 난이도 평가"""
+    
+    if not reference_info:
+        return "medium"
+    
+    syllables = reference_info.get('expected_syllables', 1)
+    phonemes = reference_info.get('phonemes', [])
+    
+    # 난이도 점수 계산
+    difficulty_score = 0
+    
+    # 음절 수에 따른 점수
+    if syllables >= 4:
+        difficulty_score += 3
+    elif syllables == 3:
+        difficulty_score += 2
+    elif syllables == 2:
+        difficulty_score += 1
+    
+    # 어려운 음소 확인
+    difficult_phonemes = ['TH', 'R', 'L', 'ZH', 'NG']
+    for phoneme in phonemes:
+        if phoneme in difficult_phonemes:
+            difficulty_score += 1
+    
+    # 난이도 결정
+    if difficulty_score <= 1:
+        return "easy"
+    elif difficulty_score <= 3:
+        return "medium"
+    else:
+        return "hard"
+
 # === 기본 라우트 ===
 
 @app.get("/")
 async def root():
     """API 상태 확인"""
     return {
-        "message": "AI Language Learning API with OpenAI",
+        "message": "AI Language Learning API with OpenAI + Level Assessment",
         "status": "running",
-        "version": "1.5.0",
-        "features": ["scenario_conversations", "openai_gpt4", "voice_support", "hybrid_mode"],
+        "version": "2.0.0",
+        "features": [
+            "scenario_conversations", 
+            "openai_gpt4", 
+            "voice_support", 
+            "hybrid_mode",
+            "adaptive_level_testing",
+            "personalized_learning_paths"
+        ],
         "timestamp": datetime.now().isoformat()
     }
 
@@ -98,7 +560,8 @@ async def health_check():
         "conversation_ai": True,
         "speech_recognition": True,
         "text_to_speech": True,
-        "openai_gpt4": True
+        "openai_gpt4": True,
+        "level_test": True
     }
     
     try:
@@ -118,6 +581,9 @@ async def health_check():
         openai_status = await openai_service.test_connection()
         services_status["openai_gpt4"] = openai_status.get("connected", False)
         
+        # 레벨 테스트 서비스 테스트
+        services_status["level_test"] = level_test_service is not None
+        
     except Exception as e:
         logger.error(f"서비스 상태 확인 오류: {e}")
         services_status["error"] = str(e)
@@ -129,6 +595,194 @@ async def health_check():
         "services": services_status,
         "timestamp": datetime.now().isoformat()
     }
+
+# === 사용자 초기화 및 레벨 테스트 API ===
+
+@app.post("/api/user/initialize")
+async def initialize_user(user_id: str, language: str = "english"):
+    """신규 사용자 초기화 - 레벨 테스트부터 시작"""
+    try:
+        logger.info(f"사용자 초기화: {user_id}")
+        
+        # 레벨 테스트 시작
+        test_result = await level_test_service.start_level_test(
+            user_id=user_id,
+            language=language
+        )
+        
+        if test_result["success"]:
+            return {
+                "success": True,
+                "message": "환영합니다! 먼저 간단한 레벨 테스트를 진행하겠습니다.",
+                "data": {
+                    "user_id": user_id,
+                    "step": "level_assessment", 
+                    "test_session": test_result,
+                    "instructions": "각 문제를 차례대로 풀어주세요. 모르는 문제는 추측해서 답해도 괜찮습니다."
+                }
+            }
+        else:
+            raise HTTPException(status_code=400, detail=test_result["error"])
+            
+    except Exception as e:
+        logger.error(f"사용자 초기화 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"사용자 초기화 중 오류: {str(e)}")
+
+@app.post("/api/level-test/start")
+async def start_level_test(request: LevelTestStartRequest):
+    """사용자 레벨 테스트 시작"""
+    try:
+        logger.info(f"레벨 테스트 시작 요청: {request.user_id} - {request.language}")
+        
+        result = await level_test_service.start_level_test(
+            user_id=request.user_id,
+            language=request.language
+        )
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "message": "레벨 테스트가 시작되었습니다.",
+                "data": result
+            }
+        else:
+            raise HTTPException(status_code=400, detail=result["error"])
+            
+    except Exception as e:
+        logger.error(f"레벨 테스트 시작 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"레벨 테스트 시작 중 오류: {str(e)}")
+
+@app.post("/api/level-test/answer")
+async def submit_test_answer(request: LevelTestAnswerRequest):
+    """레벨 테스트 답변 제출"""
+    try:
+        logger.info(f"레벨 테스트 답변 제출: {request.session_id} - {request.question_id}")
+        
+        result = await level_test_service.submit_answer(
+            session_id=request.session_id,
+            question_id=request.question_id,
+            answer=request.answer
+        )
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "message": "답변이 처리되었습니다.",
+                "data": result
+            }
+        else:
+            raise HTTPException(status_code=400, detail=result["error"])
+            
+    except Exception as e:
+        logger.error(f"답변 처리 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"답변 처리 중 오류: {str(e)}")
+
+@app.get("/api/level-test/{session_id}/status")
+async def get_level_test_status(session_id: str):
+    """레벨 테스트 상태 조회"""
+    try:
+        status = level_test_service.get_session_status(session_id)
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "status": status,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"레벨 테스트 상태 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"상태 조회 중 오류: {str(e)}")
+
+@app.get("/api/level-test/{session_id}/results")
+async def get_level_test_results(session_id: str):
+    """레벨 테스트 상세 결과 조회"""
+    try:
+        session = level_test_service.active_sessions.get(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+        
+        if not session["completed"]:
+            raise HTTPException(status_code=400, detail="아직 완료되지 않은 테스트입니다.")
+        
+        results = session.get("final_result", {})
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "results": results,
+            "detailed_analysis": {
+                "response_patterns": analyze_response_patterns(session["responses"]),
+                "time_analysis": analyze_response_times(session["responses"]),
+                "difficulty_progression": analyze_difficulty_progression(session["responses"])
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"결과 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"결과 조회 중 오류: {str(e)}")
+
+@app.post("/api/user/complete-assessment")
+async def complete_assessment(user_id: str, session_id: str):
+    """레벨 테스트 완료 후 개인화된 학습 경로 제공"""
+    try:
+        # 레벨 테스트 결과 조회
+        session_status = level_test_service.get_session_status(session_id)
+        
+        if not session_status.get("exists") or not session_status.get("completed"):
+            raise HTTPException(status_code=400, detail="완료되지 않은 테스트입니다.")
+        
+        # 세션에서 최종 결과 가져오기
+        session = level_test_service.active_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+        
+        # 사용자 프로필 생성
+        final_result = session.get("final_result", {})
+        user_level = final_result.get("final_level", "A2")
+        weak_areas = final_result.get("areas_to_improve", [])
+        
+        # 개인화된 학습 경로 생성
+        learning_path = await generate_personalized_learning_path(user_level, weak_areas)
+        
+        # 사용자 프로필 저장 (실제로는 데이터베이스에 저장)
+        user_profile = {
+            "user_id": user_id,
+            "assessed_level": user_level,
+            "skill_breakdown": final_result.get("skill_breakdown", {}),
+            "strengths": final_result.get("strengths", []),
+            "areas_to_improve": weak_areas,
+            "learning_path": learning_path,
+            "assessment_date": datetime.now().isoformat(),
+            "recommended_daily_time": "20-30 minutes",
+            "next_assessment_due": (datetime.now() + timedelta(days=30)).isoformat()
+        }
+        
+        logger.info(f"사용자 평가 완료: {user_id} - 레벨: {user_level}")
+        
+        return {
+            "success": True,
+            "message": f"축하합니다! 당신의 레벨은 {user_level}입니다.",
+            "data": {
+                "user_profile": user_profile,
+                "assessment_results": final_result,
+                "first_lesson": await get_first_lesson_for_level(user_level, weak_areas),
+                "learning_plan": {
+                    "daily_goals": generate_daily_goals(user_level),
+                    "weekly_plan": generate_weekly_plan(user_level, weak_areas),
+                    "milestone_targets": generate_milestones(user_level)
+                }
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"평가 완료 처리 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"평가 완료 처리 중 오류: {str(e)}")
 
 # === 대화 관리 API ===
 
@@ -602,6 +1256,190 @@ async def websocket_conversation(websocket: WebSocket, session_id: str):
         if session_id in connected_clients:
             del connected_clients[session_id]
 
+@app.post("/api/pronunciation/analyze", response_model=PronunciationResponse)
+async def analyze_pronunciation(request: PronunciationAnalysisRequest):
+    """음성 억양 분석"""
+    
+    try:
+        logger.info(f"억양 분석 요청: {len(request.target_text)} 글자, 레벨: {request.user_level}")
+        
+        # 입력 검증
+        if not request.audio_base64:
+            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
+        
+        if not request.target_text:
+            raise HTTPException(status_code=400, detail="대상 텍스트가 없습니다.")
+        
+        # 억양 분석 수행
+        result = await pronunciation_service.analyze_pronunciation_from_base64(
+            audio_base64=request.audio_base64,
+            target_text=request.target_text,
+            user_level=request.user_level
+        )
+        
+        # 응답 데이터 구성
+        response_data = {
+            "analysis_id": f"pronunciation_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "target_text": request.target_text,
+            "user_level": request.user_level,
+            "scores": {
+                "overall": result.overall_score,
+                "pitch": result.pitch_score,
+                "rhythm": result.rhythm_score,
+                "stress": result.stress_score,
+                "fluency": result.fluency_score
+            },
+            "grade": _get_grade_from_score(result.overall_score),
+            "feedback": {
+                "detailed": result.detailed_feedback,
+                "suggestions": result.suggestions,
+                "phoneme_scores": result.phoneme_scores
+            },
+            "improvement_priority": _get_improvement_priority(result),
+            "analyzed_at": datetime.now().isoformat()
+        }
+        
+        logger.info(f"억양 분석 완료: 전체 점수 {result.overall_score:.1f}")
+        
+        return PronunciationResponse(
+            success=True,
+            message="억양 분석이 완료되었습니다.",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"억양 분석 오류: {e}")
+        import traceback
+        logger.error(f"상세 오류: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"억양 분석 중 오류가 발생했습니다: {str(e)}")
+
+@app.post("/api/pronunciation/compare", response_model=PronunciationResponse)
+async def compare_pronunciation(request: PronunciationComparisonRequest):
+    """발음 비교 분석"""
+    
+    try:
+        logger.info(f"발음 비교 요청: {request.reference_word}, 레벨: {request.user_level}")
+        
+        # 입력 검증
+        if not request.audio_base64:
+            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
+        
+        if not request.reference_word:
+            raise HTTPException(status_code=400, detail="비교할 단어가 없습니다.")
+        
+        # 발음 비교 수행
+        comparison_result = await pronunciation_service.compare_pronunciations(
+            user_audio_base64=request.audio_base64,
+            reference_word=request.reference_word,
+            user_level=request.user_level
+        )
+        
+        # 응답 데이터 구성
+        response_data = {
+            "comparison_id": f"comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "reference_word": request.reference_word,
+            "user_level": request.user_level,
+            "comparison_result": comparison_result,
+            "overall_similarity": _calculate_similarity(comparison_result),
+            "recommendation": _get_practice_recommendation(comparison_result),
+            "compared_at": datetime.now().isoformat()
+        }
+        
+        logger.info(f"발음 비교 완료: {request.reference_word}")
+        
+        return PronunciationResponse(
+            success=True,
+            message="발음 비교가 완료되었습니다.",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"발음 비교 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"발음 비교 중 오류가 발생했습니다: {str(e)}")
+
+@app.get("/api/pronunciation/reference/{word}")
+async def get_reference_pronunciation(word: str):
+    """표준 발음 정보 조회"""
+    
+    try:
+        logger.info(f"표준 발음 조회: {word}")
+        
+        # 표준 발음 정보 가져오기
+        reference_info = await pronunciation_service.get_reference_pronunciation(word)
+        
+        if reference_info:
+            response_data = {
+                "word": word,
+                "reference_info": reference_info,
+                "pronunciation_tips": _get_pronunciation_tips(word, reference_info),
+                "practice_phrases": _generate_practice_phrases(word),
+                "difficulty_level": _assess_difficulty(word, reference_info),
+                "retrieved_at": datetime.now().isoformat()
+            }
+            
+            return {
+                "success": True,
+                "message": f"'{word}'의 표준 발음 정보입니다.",
+                "data": response_data
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"'{word}'의 발음 정보를 찾을 수 없습니다.",
+                "data": None
+            }
+            
+    except Exception as e:
+        logger.error(f"표준 발음 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"표준 발음 조회 중 오류가 발생했습니다: {str(e)}")
+
+@app.get("/api/pronunciation/features")
+async def get_pronunciation_features():
+    """발음 분석 기능 정보"""
+    
+    try:
+        features = pronunciation_service.get_supported_features()
+        
+        return {
+            "success": True,
+            "message": "발음 분석 기능 정보입니다.",
+            "data": {
+                "supported_features": features,
+                "api_endpoints": {
+                    "analyze": "/api/pronunciation/analyze",
+                    "compare": "/api/pronunciation/compare", 
+                    "reference": "/api/pronunciation/reference/{word}",
+                    "features": "/api/pronunciation/features"
+                },
+                "usage_examples": {
+                    "analyze": {
+                        "description": "음성 파일의 억양을 분석합니다",
+                        "required_fields": ["audio_base64", "target_text"],
+                        "optional_fields": ["user_level", "language"]
+                    },
+                    "compare": {
+                        "description": "사용자 발음과 표준 발음을 비교합니다",
+                        "required_fields": ["audio_base64", "reference_word"],
+                        "optional_fields": ["user_level", "language"]
+                    }
+                },
+                "data_sources": [
+                    "CMU Pronouncing Dictionary (무료)",
+                    "Forvo API (선택적)",
+                    "음성학 규칙 기반 패턴",
+                    "Praat 음성 분석 라이브러리"
+                ]
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"기능 정보 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"기능 정보 조회 중 오류가 발생했습니다: {str(e)}")
+    
 # === 예외 처리 ===
 
 @app.exception_handler(HTTPException)
@@ -634,7 +1472,7 @@ async def general_exception_handler(request, exc):
 # === 서버 실행 ===
 
 if __name__ == "__main__":
-    logger.info("🚀 AI Language Learning API 서버 시작! (OpenAI GPT-4 지원)")
+    logger.info("🚀 AI Language Learning API 서버 시작! (OpenAI GPT-4 + Level Assessment)")
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
