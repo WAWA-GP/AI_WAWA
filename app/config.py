@@ -7,6 +7,7 @@ import os
 from typing import List
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     """애플리케이션 설정"""
     
@@ -30,7 +31,10 @@ class Settings(BaseSettings):
     openai_max_tokens: int = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
     
     # 데이터베이스 설정
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./language_learning.db")
+    database_url: str = os.getenv(
+        "DATABASE_URL", 
+        "postgresql://postgres:Wawa2025!@#@db.ijpayabiqrayidtpfung.supabase.co:5432/postgres"
+    )
     
     # 로깅 설정
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
@@ -56,8 +60,10 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = False
 
+
 # 전역 설정 인스턴스
 settings = Settings()
+
 
 # 설정 검증
 def validate_settings():
@@ -82,6 +88,7 @@ def validate_settings():
     
     print("✅ 모든 설정이 올바르게 구성되었습니다!")
     return True
+
 
 if __name__ == "__main__":
     # 설정 테스트

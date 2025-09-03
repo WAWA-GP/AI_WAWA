@@ -13,6 +13,21 @@ import uvicorn
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from services.pronunciation_analysis_service import pronunciation_service
+from supabase import create_client
+
+# Supabase 프로젝트 URL과 익명(Anon) 키 또는 서비스 역할 키를 입력하세요.
+url = "https://ijpayabiqrayidtpfung.supabase.co"
+key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlqcGF5YWJpcXJheWlkdHBmdW5nIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NDM2MTkyNCwiZXhwIjoyMDY5OTM3OTI0fQ.g8x2RGVW2eqF72sTgk7QHELxi1CtCmglKTC0WMI4veU"
+
+# 클라이언트 생성
+supabase = create_client(url, key)
+
+# "users" 테이블에서 모든 데이터 조회
+data = supabase.table("users").select("*").execute()
+
+# 조회된 데이터 출력
+print(data.data)
+
 load_dotenv()
 
 # 서비스 임포트
