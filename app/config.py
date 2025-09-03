@@ -30,11 +30,6 @@ class Settings(BaseSettings):
     openai_temperature: float = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
     openai_max_tokens: int = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
     
-    # 데이터베이스 설정
-    database_url: str = os.getenv(
-        "DATABASE_URL", 
-        "postgresql://postgres:Wawa2025!@#@db.ijpayabiqrayidtpfung.supabase.co:5432/postgres"
-    )
     
     # 로깅 설정
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
