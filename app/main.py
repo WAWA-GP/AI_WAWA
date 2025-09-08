@@ -1,11 +1,11 @@
 # app/main.py
-# FastAPI 메인 서버 - AI 언어 학습 앱 (OpenAI 통합)
+# FastAPI 메인 서버 - AI 언어 학습 앱 (OpenAI 통합) with Swagger UI
 
 import os
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, List
 import asyncio
 import json
@@ -41,11 +41,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# FastAPI 앱 생성
+# FastAPI 앱 생성 with Swagger 설정
 app = FastAPI(
     title="AI Language Learning API",
-    description="AI 기반 언어 학습 대화 시스템 - OpenAI GPT-4 지원 + 레벨 테스트",
-    version="2.0.0"
+    description="""
+    AI 기반 언어 학습 대화 시스템
+    
+    ## 주요 기능
+    * **레벨 테스트**: 적응형 언어 레벨 평가 (CEFR 표준)
+    * **대화 연습**: OpenAI GPT-4 기반 실시간 대화
+    * **발음 분석**: 음성 억양 및 발음 평가
+    * **개인화**: 사용자별 맞춤형 학습 경로
+    
+    ## 지원 언어
+    한국어, 영어, 일본어, 중국어
+    
+    ## 사용 방법
+    1. `/api/user/initialize`로 사용자 초기화 및 레벨 테스트 시작
+    2. `/api/level-test/answer`로 레벨 테스트 완료
+    3. `/api/conversation/start`로 대화 연습 시작
+    4. `/api/pronunciation/analyze`로 발음 분석
+    """,
+    version="2.0.0",
+    contact={
+        "name": "Language Learning Team",
+        "email": "support@example.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    docs_url="/docs",      # Swagger UI 경로
+    redoc_url=None,        # ReDoc 비활성화
+    openapi_url="/openapi.json"
 )
 
 # CORS 설정
@@ -60,60 +88,154 @@ app.add_middleware(
 # 연결된 WebSocket 클라이언트 관리
 connected_clients: Dict[str, WebSocket] = {}
 
-# === Pydantic 모델들 ===
+# === Pydantic 모델들 (Pydantic V2 호환) ===
 
 class ConversationStartRequest(BaseModel):
-    user_id: str
-    situation: str  # airport, restaurant, hotel, street
-    difficulty: str = "beginner"  # beginner, intermediate, advanced
-    language: str = "en"  # ko, en, ja, zh
-    mode: str = "auto"  # scenario, openai, hybrid, auto
+    user_id: str = Field(..., description="사용자 고유 ID")
+    situation: str = Field(..., description="대화 상황 (airport, restaurant, hotel, street)")
+    difficulty: str = Field("beginner", description="난이도 (beginner, intermediate, advanced)")
+    language: str = Field("en", description="언어 코드 (ko, en, ja, zh)")
+    mode: str = Field("auto", description="대화 모드 (scenario, openai, hybrid, auto)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user123",
+                "situation": "restaurant",
+                "difficulty": "intermediate", 
+                "language": "ko",
+                "mode": "hybrid"
+            }
+        }
 
 class TextMessageRequest(BaseModel):
-    session_id: str
-    message: str
-    language: str = "en"
+    session_id: str = Field(..., description="세션 ID")
+    message: str = Field(..., description="사용자 메시지")
+    language: str = Field("en", description="언어 코드")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "session_12345",
+                "message": "I would like to order a coffee, please.",
+                "language": "en"
+            }
+        }
 
 class VoiceMessageRequest(BaseModel):
-    session_id: str
-    audio_base64: str
-    language: str = "en"
+    session_id: str = Field(..., description="세션 ID")
+    audio_base64: str = Field(..., description="Base64 인코딩된 오디오 데이터")
+    language: str = Field("en", description="언어 코드")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "session_12345",
+                "audio_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+                "language": "en"
+            }
+        }
 
 class ConversationResponse(BaseModel):
-    success: bool
-    message: str
-    data: Optional[Dict] = None
-    error: Optional[str] = None
+    success: bool = Field(..., description="요청 성공 여부")
+    message: str = Field(..., description="응답 메시지")
+    data: Optional[Dict] = Field(None, description="응답 데이터")
+    error: Optional[str] = Field(None, description="오류 메시지")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "대화 세션이 시작되었습니다.",
+                "data": {
+                    "session_id": "session_12345",
+                    "ai_message": "안녕하세요! 레스토랑 대화를 연습해봅시다."
+                },
+                "error": None
+            }
+        }
 
 class LevelTestStartRequest(BaseModel):
-    user_id: str
-    language: str = "english"
-    test_type: str = "adaptive"  # adaptive, full, quick
+    user_id: str = Field(..., description="사용자 고유 ID")
+    language: str = Field("english", description="테스트 언어")
+    test_type: str = Field("adaptive", description="테스트 유형 (adaptive, full, quick)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user123",
+                "language": "english",
+                "test_type": "adaptive"
+            }
+        }
 
 class LevelTestAnswerRequest(BaseModel):
-    session_id: str
-    question_id: str
-    answer: str
+    session_id: str = Field(..., description="테스트 세션 ID")
+    question_id: str = Field(..., description="문제 ID")
+    answer: str = Field(..., description="사용자 답변")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "test_session_12345",
+                "question_id": "vocab_B1_important_1234",
+                "answer": "A"
+            }
+        }
 
 class PronunciationAnalysisRequest(BaseModel):
-    audio_base64: str
-    target_text: str
-    user_level: str = "B1"
-    language: str = "en"
+    audio_base64: str = Field(..., description="Base64 인코딩된 오디오 데이터")
+    target_text: str = Field(..., description="발음할 대상 텍스트")
+    user_level: str = Field("B1", description="사용자 레벨 (A1-C2)")
+    language: str = Field("en", description="언어 코드")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "audio_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+                "target_text": "Hello, how are you?",
+                "user_level": "B1",
+                "language": "en"
+            }
+        }
 
 class PronunciationComparisonRequest(BaseModel):
-    audio_base64: str
-    reference_word: str
-    user_level: str = "B1"
-    language: str = "en"
+    audio_base64: str = Field(..., description="Base64 인코딩된 오디오 데이터")
+    reference_word: str = Field(..., description="비교할 단어")
+    user_level: str = Field("B1", description="사용자 레벨 (A1-C2)")
+    language: str = Field("en", description="언어 코드")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "audio_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+                "reference_word": "computer",
+                "user_level": "B1",
+                "language": "en"
+            }
+        }
 
 class PronunciationResponse(BaseModel):
-    success: bool
-    message: str
-    data: Optional[Dict] = None
-    error: Optional[str] = None
+    success: bool = Field(..., description="분석 성공 여부")
+    message: str = Field(..., description="응답 메시지")
+    data: Optional[Dict] = Field(None, description="분석 결과 데이터")
+    error: Optional[str] = Field(None, description="오류 메시지")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "발음 분석이 완료되었습니다.",
+                "data": {
+                    "overall_score": 85.3,
+                    "pitch_score": 82.1,
+                    "rhythm_score": 88.7
+                },
+                "error": None
+            }
+        }
 
-# === 도우미 함수들 (API 엔드포인트보다 먼저 정의) ===
+# === 도우미 함수들 ===
 
 async def generate_personalized_learning_path(level: str, weak_areas: List[str]) -> Dict:
     """개인화된 학습 경로 생성"""
@@ -365,8 +487,6 @@ def calculate_response_consistency(responses: List[Dict]) -> str:
         return "moderately_consistent" 
     else:
         return "inconsistent"
-    
-# === 도우미 함수들 ===
 
 def _get_grade_from_score(score: float) -> str:
     """점수를 등급으로 변환"""
@@ -540,9 +660,15 @@ def _assess_difficulty(word: str, reference_info: Dict) -> str:
 
 # === 기본 라우트 ===
 
-@app.get("/")
+@app.get("/", tags=["System"], summary="API 상태 확인")
 async def root():
-    """API 상태 확인"""
+    """
+    API 서버의 기본 상태와 정보를 확인합니다.
+    
+    - **status**: 서버 상태
+    - **version**: API 버전  
+    - **features**: 지원하는 기능 목록
+    """
     return {
         "message": "AI Language Learning API with OpenAI + Level Assessment",
         "status": "running",
@@ -558,9 +684,14 @@ async def root():
         "timestamp": datetime.now().isoformat()
     }
 
-@app.get("/health")
+@app.get("/health", tags=["System"], summary="서비스 상태 체크")
 async def health_check():
-    """서비스 상태 체크"""
+    """
+    모든 서비스의 상태를 확인합니다.
+    
+    각 서비스(대화 AI, 음성 인식, TTS, OpenAI, 레벨 테스트)의 상태를 점검하고
+    전체적인 시스템 건강도를 반환합니다.
+    """
     
     # 각 서비스 상태 확인
     services_status = {
@@ -605,8 +736,13 @@ async def health_check():
 
 # === 사용자 초기화 및 레벨 테스트 API ===
 
-@app.post("/api/user/initialize")
-async def initialize_user(user_id: str, language: str = "english"):
+@app.post("/api/user/initialize", tags=["User"], 
+         summary="신규 사용자 초기화",
+         description="새로운 사용자를 초기화하고 레벨 테스트를 시작합니다.")
+async def initialize_user(
+    user_id: str = Query(..., description="사용자 고유 ID"),
+    language: str = Query("english", description="학습할 언어")
+):
     """신규 사용자 초기화 - 레벨 테스트부터 시작"""
     try:
         logger.info(f"사용자 초기화: {user_id}")
@@ -635,7 +771,9 @@ async def initialize_user(user_id: str, language: str = "english"):
         logger.error(f"사용자 초기화 오류: {e}")
         raise HTTPException(status_code=500, detail=f"사용자 초기화 중 오류: {str(e)}")
 
-@app.post("/api/level-test/start")
+@app.post("/api/level-test/start", tags=["Level Test"],
+         summary="레벨 테스트 시작",
+         description="사용자의 언어 실력을 평가하는 적응형 레벨 테스트를 시작합니다.")
 async def start_level_test(request: LevelTestStartRequest):
     """사용자 레벨 테스트 시작"""
     try:
@@ -659,7 +797,9 @@ async def start_level_test(request: LevelTestStartRequest):
         logger.error(f"레벨 테스트 시작 오류: {e}")
         raise HTTPException(status_code=500, detail=f"레벨 테스트 시작 중 오류: {str(e)}")
 
-@app.post("/api/level-test/answer")
+@app.post("/api/level-test/answer", tags=["Level Test"],
+         summary="레벨 테스트 답변 제출",
+         description="레벨 테스트 문제에 대한 답변을 제출하고 다음 문제 또는 결과를 받습니다.")
 async def submit_test_answer(request: LevelTestAnswerRequest):
     """레벨 테스트 답변 제출"""
     try:
@@ -684,7 +824,9 @@ async def submit_test_answer(request: LevelTestAnswerRequest):
         logger.error(f"답변 처리 오류: {e}")
         raise HTTPException(status_code=500, detail=f"답변 처리 중 오류: {str(e)}")
 
-@app.get("/api/level-test/{session_id}/status")
+@app.get("/api/level-test/{session_id}/status", tags=["Level Test"],
+        summary="레벨 테스트 상태 조회",
+        description="현재 진행 중인 레벨 테스트의 상태를 조회합니다.")
 async def get_level_test_status(session_id: str):
     """레벨 테스트 상태 조회"""
     try:
@@ -701,7 +843,9 @@ async def get_level_test_status(session_id: str):
         logger.error(f"레벨 테스트 상태 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"상태 조회 중 오류: {str(e)}")
 
-@app.get("/api/level-test/{session_id}/results")
+@app.get("/api/level-test/{session_id}/results", tags=["Level Test"],
+        summary="레벨 테스트 결과 조회",
+        description="완료된 레벨 테스트의 상세 결과를 조회합니다.")
 async def get_level_test_results(session_id: str):
     """레벨 테스트 상세 결과 조회"""
     try:
@@ -732,8 +876,13 @@ async def get_level_test_results(session_id: str):
         logger.error(f"결과 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"결과 조회 중 오류: {str(e)}")
 
-@app.post("/api/user/complete-assessment")
-async def complete_assessment(user_id: str, session_id: str):
+@app.post("/api/user/complete-assessment", tags=["User"],
+         summary="레벨 평가 완료",
+         description="레벨 테스트 완료 후 개인화된 학습 경로를 제공합니다.")
+async def complete_assessment(
+    user_id: str = Query(..., description="사용자 ID"),
+    session_id: str = Query(..., description="테스트 세션 ID")
+):
     """레벨 테스트 완료 후 개인화된 학습 경로 제공"""
     try:
         # 레벨 테스트 결과 조회
@@ -793,7 +942,10 @@ async def complete_assessment(user_id: str, session_id: str):
 
 # === 대화 관리 API ===
 
-@app.post("/api/conversation/start", response_model=ConversationResponse)
+@app.post("/api/conversation/start", tags=["Conversation"],
+         summary="대화 세션 시작",
+         description="새로운 대화 세션을 시작합니다. OpenAI GPT-4 또는 시나리오 기반 대화를 선택할 수 있습니다.",
+         response_model=ConversationResponse)
 async def start_conversation(request: ConversationStartRequest):
     """새로운 대화 세션 시작 (OpenAI 지원)"""
     
@@ -845,7 +997,10 @@ async def start_conversation(request: ConversationStartRequest):
         logger.error(f"대화 시작 오류: {e}")
         raise HTTPException(status_code=500, detail=f"대화 시작 중 오류: {str(e)}")
 
-@app.post("/api/conversation/text", response_model=ConversationResponse)
+@app.post("/api/conversation/text", tags=["Conversation"],
+         summary="텍스트 메시지 전송",
+         description="대화 세션에 텍스트 메시지를 전송하고 AI 응답을 받습니다.",
+         response_model=ConversationResponse)
 async def send_text_message(request: TextMessageRequest):
     """텍스트 메시지 처리 (OpenAI 지원)"""
     
@@ -951,7 +1106,10 @@ async def send_text_message(request: TextMessageRequest):
         logger.error(f"상세 오류: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"텍스트 처리 중 오류가 발생했습니다: {str(e)}")
 
-@app.post("/api/conversation/voice", response_model=ConversationResponse)
+@app.post("/api/conversation/voice", tags=["Conversation"],
+         summary="음성 메시지 전송",
+         description="음성 메시지를 텍스트로 변환하여 대화에 사용합니다.",
+         response_model=ConversationResponse)
 async def send_voice_message(request: VoiceMessageRequest):
     """음성 메시지 처리"""
     
@@ -992,7 +1150,9 @@ async def send_voice_message(request: VoiceMessageRequest):
         logger.error(f"음성 처리 오류: {e}")
         raise HTTPException(status_code=500, detail=f"음성 처리 중 오류: {str(e)}")
 
-@app.get("/api/conversation/{session_id}/status")
+@app.get("/api/conversation/{session_id}/status", tags=["Conversation"],
+        summary="대화 세션 상태 조회",
+        description="진행 중인 대화 세션의 상태를 조회합니다.")
 async def get_conversation_status(session_id: str):
     """대화 세션 상태 조회"""
     
@@ -1039,7 +1199,9 @@ async def get_conversation_status(session_id: str):
             "timestamp": datetime.now().isoformat()
         }
 
-@app.delete("/api/conversation/{session_id}")
+@app.delete("/api/conversation/{session_id}", tags=["Conversation"],
+           summary="대화 세션 종료",
+           description="진행 중인 대화 세션을 종료합니다.")
 async def end_conversation(session_id: str):
     """대화 세션 종료"""
     
@@ -1072,9 +1234,207 @@ async def end_conversation(session_id: str):
             "timestamp": datetime.now().isoformat()
         }
 
+# === 발음 분석 API ===
+
+@app.post("/api/pronunciation/analyze", tags=["Pronunciation"],
+         summary="음성 억양 분석",
+         description="사용자의 음성을 분석하여 발음, 억양, 리듬 등을 평가합니다.",
+         response_model=PronunciationResponse)
+async def analyze_pronunciation(request: PronunciationAnalysisRequest):
+    """음성 억양 분석"""
+    
+    try:
+        logger.info(f"억양 분석 요청: {len(request.target_text)} 글자, 레벨: {request.user_level}")
+        
+        # 입력 검증
+        if not request.audio_base64:
+            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
+        
+        if not request.target_text:
+            raise HTTPException(status_code=400, detail="대상 텍스트가 없습니다.")
+        
+        # 억양 분석 수행
+        result = await pronunciation_service.analyze_pronunciation_from_base64(
+            audio_base64=request.audio_base64,
+            target_text=request.target_text,
+            user_level=request.user_level
+        )
+        
+        # 응답 데이터 구성
+        response_data = {
+            "analysis_id": f"pronunciation_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "target_text": request.target_text,
+            "user_level": request.user_level,
+            "scores": {
+                "overall": result.overall_score,
+                "pitch": result.pitch_score,
+                "rhythm": result.rhythm_score,
+                "stress": result.stress_score,
+                "fluency": result.fluency_score
+            },
+            "grade": _get_grade_from_score(result.overall_score),
+            "feedback": {
+                "detailed": result.detailed_feedback,
+                "suggestions": result.suggestions,
+                "phoneme_scores": result.phoneme_scores
+            },
+            "improvement_priority": _get_improvement_priority(result),
+            "analyzed_at": datetime.now().isoformat()
+        }
+        
+        logger.info(f"억양 분석 완료: 전체 점수 {result.overall_score:.1f}")
+        
+        return PronunciationResponse(
+            success=True,
+            message="억양 분석이 완료되었습니다.",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"억양 분석 오류: {e}")
+        import traceback
+        logger.error(f"상세 오류: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"억양 분석 중 오류가 발생했습니다: {str(e)}")
+
+@app.post("/api/pronunciation/compare", tags=["Pronunciation"],
+         summary="발음 비교 분석",
+         description="사용자 발음과 표준 발음을 비교 분석합니다.",
+         response_model=PronunciationResponse)
+async def compare_pronunciation(request: PronunciationComparisonRequest):
+    """발음 비교 분석"""
+    
+    try:
+        logger.info(f"발음 비교 요청: {request.reference_word}, 레벨: {request.user_level}")
+        
+        # 입력 검증
+        if not request.audio_base64:
+            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
+        
+        if not request.reference_word:
+            raise HTTPException(status_code=400, detail="비교할 단어가 없습니다.")
+        
+        # 발음 비교 수행
+        comparison_result = await pronunciation_service.compare_pronunciations(
+            user_audio_base64=request.audio_base64,
+            reference_word=request.reference_word,
+            user_level=request.user_level
+        )
+        
+        # 응답 데이터 구성
+        response_data = {
+            "comparison_id": f"comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "reference_word": request.reference_word,
+            "user_level": request.user_level,
+            "comparison_result": comparison_result,
+            "overall_similarity": _calculate_similarity(comparison_result),
+            "recommendation": _get_practice_recommendation(comparison_result),
+            "compared_at": datetime.now().isoformat()
+        }
+        
+        logger.info(f"발음 비교 완료: {request.reference_word}")
+        
+        return PronunciationResponse(
+            success=True,
+            message="발음 비교가 완료되었습니다.",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"발음 비교 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"발음 비교 중 오류가 발생했습니다: {str(e)}")
+
+@app.get("/api/pronunciation/reference/{word}", tags=["Pronunciation"],
+        summary="표준 발음 정보 조회",
+        description="특정 단어의 표준 발음 정보를 조회합니다.")
+async def get_reference_pronunciation(word: str):
+    """표준 발음 정보 조회"""
+    
+    try:
+        logger.info(f"표준 발음 조회: {word}")
+        
+        # 표준 발음 정보 가져오기
+        reference_info = await pronunciation_service.get_reference_pronunciation(word)
+        
+        if reference_info:
+            response_data = {
+                "word": word,
+                "reference_info": reference_info,
+                "pronunciation_tips": _get_pronunciation_tips(word, reference_info),
+                "practice_phrases": _generate_practice_phrases(word),
+                "difficulty_level": _assess_difficulty(word, reference_info),
+                "retrieved_at": datetime.now().isoformat()
+            }
+            
+            return {
+                "success": True,
+                "message": f"'{word}'의 표준 발음 정보입니다.",
+                "data": response_data
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"'{word}'의 발음 정보를 찾을 수 없습니다.",
+                "data": None
+            }
+            
+    except Exception as e:
+        logger.error(f"표준 발음 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"표준 발음 조회 중 오류가 발생했습니다: {str(e)}")
+
+@app.get("/api/pronunciation/features", tags=["Pronunciation"],
+        summary="발음 분석 기능 정보",
+        description="지원하는 발음 분석 기능 목록을 조회합니다.")
+async def get_pronunciation_features():
+    """발음 분석 기능 정보"""
+    
+    try:
+        features = pronunciation_service.get_supported_features()
+        
+        return {
+            "success": True,
+            "message": "발음 분석 기능 정보입니다.",
+            "data": {
+                "supported_features": features,
+                "api_endpoints": {
+                    "analyze": "/api/pronunciation/analyze",
+                    "compare": "/api/pronunciation/compare", 
+                    "reference": "/api/pronunciation/reference/{word}",
+                    "features": "/api/pronunciation/features"
+                },
+                "usage_examples": {
+                    "analyze": {
+                        "description": "음성 파일의 억양을 분석합니다",
+                        "required_fields": ["audio_base64", "target_text"],
+                        "optional_fields": ["user_level", "language"]
+                    },
+                    "compare": {
+                        "description": "사용자 발음과 표준 발음을 비교합니다",
+                        "required_fields": ["audio_base64", "reference_word"],
+                        "optional_fields": ["user_level", "language"]
+                    }
+                },
+                "data_sources": [
+                    "CMU Pronouncing Dictionary (무료)",
+                    "Forvo API (선택적)",
+                    "음성학 규칙 기반 패턴",
+                    "Praat 음성 분석 라이브러리"
+                ]
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"기능 정보 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"기능 정보 조회 중 오류가 발생했습니다: {str(e)}")
+
 # === 정보 조회 API ===
 
-@app.get("/api/situations")
+@app.get("/api/situations", tags=["Info"],
+        summary="사용 가능한 대화 상황 조회",
+        description="대화 연습에서 사용할 수 있는 모든 상황 목록을 조회합니다.")
 async def get_available_situations():
     """사용 가능한 대화 상황 목록"""
     
@@ -1102,7 +1462,9 @@ async def get_available_situations():
         logger.error(f"상황 목록 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"상황 목록 조회 중 오류: {str(e)}")
 
-@app.get("/api/languages")
+@app.get("/api/languages", tags=["Info"],
+        summary="지원하는 언어 목록",
+        description="시스템에서 지원하는 모든 언어 목록을 조회합니다.")
 async def get_supported_languages():
     """지원하는 언어 목록"""
     
@@ -1121,7 +1483,9 @@ async def get_supported_languages():
         logger.error(f"언어 목록 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"언어 목록 조회 중 오류: {str(e)}")
 
-@app.get("/api/openai/status")
+@app.get("/api/openai/status", tags=["System"],
+        summary="OpenAI 서비스 상태",
+        description="OpenAI GPT-4 서비스의 연결 상태를 확인합니다.")
 async def get_openai_status():
     """OpenAI 서비스 상태 확인"""
     
@@ -1263,190 +1627,6 @@ async def websocket_conversation(websocket: WebSocket, session_id: str):
         if session_id in connected_clients:
             del connected_clients[session_id]
 
-@app.post("/api/pronunciation/analyze", response_model=PronunciationResponse)
-async def analyze_pronunciation(request: PronunciationAnalysisRequest):
-    """음성 억양 분석"""
-    
-    try:
-        logger.info(f"억양 분석 요청: {len(request.target_text)} 글자, 레벨: {request.user_level}")
-        
-        # 입력 검증
-        if not request.audio_base64:
-            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
-        
-        if not request.target_text:
-            raise HTTPException(status_code=400, detail="대상 텍스트가 없습니다.")
-        
-        # 억양 분석 수행
-        result = await pronunciation_service.analyze_pronunciation_from_base64(
-            audio_base64=request.audio_base64,
-            target_text=request.target_text,
-            user_level=request.user_level
-        )
-        
-        # 응답 데이터 구성
-        response_data = {
-            "analysis_id": f"pronunciation_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            "target_text": request.target_text,
-            "user_level": request.user_level,
-            "scores": {
-                "overall": result.overall_score,
-                "pitch": result.pitch_score,
-                "rhythm": result.rhythm_score,
-                "stress": result.stress_score,
-                "fluency": result.fluency_score
-            },
-            "grade": _get_grade_from_score(result.overall_score),
-            "feedback": {
-                "detailed": result.detailed_feedback,
-                "suggestions": result.suggestions,
-                "phoneme_scores": result.phoneme_scores
-            },
-            "improvement_priority": _get_improvement_priority(result),
-            "analyzed_at": datetime.now().isoformat()
-        }
-        
-        logger.info(f"억양 분석 완료: 전체 점수 {result.overall_score:.1f}")
-        
-        return PronunciationResponse(
-            success=True,
-            message="억양 분석이 완료되었습니다.",
-            data=response_data
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"억양 분석 오류: {e}")
-        import traceback
-        logger.error(f"상세 오류: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"억양 분석 중 오류가 발생했습니다: {str(e)}")
-
-@app.post("/api/pronunciation/compare", response_model=PronunciationResponse)
-async def compare_pronunciation(request: PronunciationComparisonRequest):
-    """발음 비교 분석"""
-    
-    try:
-        logger.info(f"발음 비교 요청: {request.reference_word}, 레벨: {request.user_level}")
-        
-        # 입력 검증
-        if not request.audio_base64:
-            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
-        
-        if not request.reference_word:
-            raise HTTPException(status_code=400, detail="비교할 단어가 없습니다.")
-        
-        # 발음 비교 수행
-        comparison_result = await pronunciation_service.compare_pronunciations(
-            user_audio_base64=request.audio_base64,
-            reference_word=request.reference_word,
-            user_level=request.user_level
-        )
-        
-        # 응답 데이터 구성
-        response_data = {
-            "comparison_id": f"comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            "reference_word": request.reference_word,
-            "user_level": request.user_level,
-            "comparison_result": comparison_result,
-            "overall_similarity": _calculate_similarity(comparison_result),
-            "recommendation": _get_practice_recommendation(comparison_result),
-            "compared_at": datetime.now().isoformat()
-        }
-        
-        logger.info(f"발음 비교 완료: {request.reference_word}")
-        
-        return PronunciationResponse(
-            success=True,
-            message="발음 비교가 완료되었습니다.",
-            data=response_data
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"발음 비교 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"발음 비교 중 오류가 발생했습니다: {str(e)}")
-
-@app.get("/api/pronunciation/reference/{word}")
-async def get_reference_pronunciation(word: str):
-    """표준 발음 정보 조회"""
-    
-    try:
-        logger.info(f"표준 발음 조회: {word}")
-        
-        # 표준 발음 정보 가져오기
-        reference_info = await pronunciation_service.get_reference_pronunciation(word)
-        
-        if reference_info:
-            response_data = {
-                "word": word,
-                "reference_info": reference_info,
-                "pronunciation_tips": _get_pronunciation_tips(word, reference_info),
-                "practice_phrases": _generate_practice_phrases(word),
-                "difficulty_level": _assess_difficulty(word, reference_info),
-                "retrieved_at": datetime.now().isoformat()
-            }
-            
-            return {
-                "success": True,
-                "message": f"'{word}'의 표준 발음 정보입니다.",
-                "data": response_data
-            }
-        else:
-            return {
-                "success": False,
-                "message": f"'{word}'의 발음 정보를 찾을 수 없습니다.",
-                "data": None
-            }
-            
-    except Exception as e:
-        logger.error(f"표준 발음 조회 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"표준 발음 조회 중 오류가 발생했습니다: {str(e)}")
-
-@app.get("/api/pronunciation/features")
-async def get_pronunciation_features():
-    """발음 분석 기능 정보"""
-    
-    try:
-        features = pronunciation_service.get_supported_features()
-        
-        return {
-            "success": True,
-            "message": "발음 분석 기능 정보입니다.",
-            "data": {
-                "supported_features": features,
-                "api_endpoints": {
-                    "analyze": "/api/pronunciation/analyze",
-                    "compare": "/api/pronunciation/compare", 
-                    "reference": "/api/pronunciation/reference/{word}",
-                    "features": "/api/pronunciation/features"
-                },
-                "usage_examples": {
-                    "analyze": {
-                        "description": "음성 파일의 억양을 분석합니다",
-                        "required_fields": ["audio_base64", "target_text"],
-                        "optional_fields": ["user_level", "language"]
-                    },
-                    "compare": {
-                        "description": "사용자 발음과 표준 발음을 비교합니다",
-                        "required_fields": ["audio_base64", "reference_word"],
-                        "optional_fields": ["user_level", "language"]
-                    }
-                },
-                "data_sources": [
-                    "CMU Pronouncing Dictionary (무료)",
-                    "Forvo API (선택적)",
-                    "음성학 규칙 기반 패턴",
-                    "Praat 음성 분석 라이브러리"
-                ]
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"기능 정보 조회 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"기능 정보 조회 중 오류가 발생했습니다: {str(e)}")
-    
 # === 예외 처리 ===
 
 @app.exception_handler(HTTPException)
@@ -1479,7 +1659,7 @@ async def general_exception_handler(request, exc):
 # === 서버 실행 ===
 
 if __name__ == "__main__":
-    logger.info("🚀 AI Language Learning API 서버 시작! (OpenAI GPT-4 + Level Assessment)")
+    logger.info("🚀 AI Language Learning API 서버 시작! (OpenAI GPT-4 + Level Assessment + Swagger UI)")
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
