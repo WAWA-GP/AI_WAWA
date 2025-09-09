@@ -1,9 +1,10 @@
 # app/services/conversation_ai_service.py
-# OpenAI GPT-4와 기존 시나리오를 통합한 향상된 대화 서비스
+# OpenAI GPT-4와 기존 시나리오를 통합한 향상된 대화 서비스 (데이터 수집 포함)
 
 import json
 import random
 import re
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import logging
@@ -15,12 +16,24 @@ except ImportError:
     openai_service = None
     logging.warning("OpenAI 서비스를 가져올 수 없습니다. 기본 시나리오만 사용됩니다.")
 
+# 데이터 수집기 임포트
+try:
+    from .conversation_data_collector import data_collector
+except ImportError:
+    data_collector = None
+    logging.warning("데이터 수집기를 가져올 수 없습니다. 데이터 수집이 비활성화됩니다.")
+
 logger = logging.getLogger(__name__)
 
 class EnhancedConversationService:
-    """OpenAI GPT-4와 시나리오를 통합한 향상된 대화 서비스"""
+    """OpenAI GPT-4와 시나리오를 통합한 향상된 대화 서비스 (데이터 수집 포함)"""
     
     def __init__(self):
+        # 데이터 수집기 초기화
+        self.data_collector = data_collector
+        self.response_start_times = {}  # 응답 시간 측정용
+        
+        # 기존 시스템 초기화
         self.conversation_scenarios = {}
         self.current_scenarios = {}  # session_id별 현재 시나리오
         self.openai_sessions = {}   # OpenAI 전용 세션들
@@ -30,6 +43,8 @@ class EnhancedConversationService:
         self.SCENARIO_MODE = "scenario"    # 기존 시나리오 기반
         self.OPENAI_MODE = "openai"       # OpenAI GPT-4 기반
         self.HYBRID_MODE = "hybrid"       # 혼합 모드
+        
+        logger.info("대화 서비스 초기화 완료 (데이터 수집 포함)")
         
     def load_collected_data(self):
         """수집된 대화 데이터를 시나리오로 변환"""
@@ -54,7 +69,9 @@ class EnhancedConversationService:
                     continue
             
             if data is None:
-                raise FileNotFoundError(f"JSON 파일을 찾을 수 없습니다: {json_filename}")
+                logger.warning(f"수집된 대화 파일을 찾을 수 없음. 기본 시나리오만 사용")
+                self._add_default_scenarios()
+                return
             
             logger.info(f"JSON 파일 구조: {list(data.keys())}")
             
@@ -128,9 +145,10 @@ class EnhancedConversationService:
         situation: str,
         difficulty: str = "beginner",
         language: str = "en",
-        mode: str = "auto"  # "scenario", "openai", "hybrid", "auto"
+        mode: str = "auto",
+        user_id: str = None  # 데이터 수집을 위한 user_id 추가
     ) -> Dict[str, Any]:
-        """새로운 대화 세션 시작 (모드 자동 선택 또는 지정)"""
+        """새로운 대화 세션 시작 (데이터 수집 포함)"""
         
         if situation not in self.conversation_scenarios:
             return {
@@ -150,9 +168,21 @@ class EnhancedConversationService:
                 'difficulty': difficulty,
                 'language': language,
                 'mode': mode,
+                'user_id': user_id,
                 'started_at': datetime.now().isoformat(),
                 'turn_count': 0
             }
+            
+            # 데이터 수집: 세션 시작 기록
+            if user_id and self.data_collector:
+                await self.data_collector.start_session(
+                    session_id=session_id,
+                    user_id=user_id,
+                    situation=situation,
+                    user_level=difficulty,
+                    mode=mode
+                )
+                logger.debug(f"데이터 수집 세션 시작: {session_id}")
             
             if mode == "openai" and openai_service:
                 # OpenAI 전용 모드
@@ -171,7 +201,8 @@ class EnhancedConversationService:
                     "session_id": session_id,
                     "first_message": intro_message,
                     "scenario_title": f"AI-Powered {situation.title()} Conversation",
-                    "features": ["intelligent_responses", "contextual_feedback", "adaptive_difficulty"]
+                    "features": ["intelligent_responses", "contextual_feedback", "adaptive_difficulty"],
+                    "data_collection": bool(user_id and self.data_collector)
                 }
                 
             elif mode == "hybrid" and openai_service:
@@ -195,7 +226,8 @@ class EnhancedConversationService:
                     "first_message": intro_message,
                     "scenario_title": f"Enhanced {situation.title()} Conversation",
                     "scenario_context": scenario_context,
-                    "features": ["intelligent_responses", "scenario_based", "contextual_feedback"]
+                    "features": ["intelligent_responses", "scenario_based", "contextual_feedback"],
+                    "data_collection": bool(user_id and self.data_collector)
                 }
                 
             else:
@@ -214,21 +246,90 @@ class EnhancedConversationService:
         session_id: str,
         user_message: str
     ) -> Dict[str, Any]:
-        """사용자 메시지 처리 (모드에 따라 분기)"""
+        """사용자 메시지 처리 (데이터 수집 포함)"""
         
-        # OpenAI 세션인지 확인
-        if session_id in self.openai_sessions:
-            return await self._process_openai_message(session_id, user_message)
+        # 응답 시간 측정 시작
+        start_time = time.time()
+        self.response_start_times[session_id] = start_time
         
-        # 시나리오 세션인지 확인
-        elif session_id in self.current_scenarios:
-            return await self._process_scenario_message(session_id, user_message)
-        
-        else:
+        try:
+            # OpenAI 세션인지 확인
+            if session_id in self.openai_sessions:
+                result = await self._process_openai_message(session_id, user_message)
+            
+            # 시나리오 세션인지 확인
+            elif session_id in self.current_scenarios:
+                result = await self._process_scenario_message(session_id, user_message)
+            
+            else:
+                return {
+                    "success": False,
+                    "error": "활성 세션이 없습니다. 먼저 대화를 시작해주세요."
+                }
+            
+            # 데이터 수집
+            if result["success"] and self.data_collector:
+                await self._log_conversation_data(session_id, user_message, result, start_time)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"메시지 처리 오류: {e}")
             return {
                 "success": False,
-                "error": "활성 세션이 없습니다. 먼저 대화를 시작해주세요."
+                "error": f"메시지 처리 중 오류: {str(e)}"
             }
+    
+    async def _log_conversation_data(
+        self, 
+        session_id: str, 
+        user_message: str, 
+        ai_result: Dict, 
+        start_time: float
+    ):
+        """대화 데이터 로깅"""
+        
+        try:
+            # 세션 정보 가져오기
+            session_config = self.openai_sessions.get(session_id) or self.current_scenarios.get(session_id)
+            if not session_config:
+                return
+            
+            # 응답 시간 계산
+            response_time_ms = (time.time() - start_time) * 1000
+            
+            # 턴 인덱스 계산
+            turn_index = session_config.get('turn_count', 0)
+            session_config['turn_count'] = turn_index + 1
+            
+            # 컨텍스트 데이터 준비
+            context_data = {
+                'mode': ai_result.get('mode', session_config.get('mode')),
+                'tokens_used': ai_result.get('tokens_used', 0),
+                'model': ai_result.get('model', 'unknown'),
+                'feedback': ai_result.get('feedback', {}),
+                'completed': ai_result.get('completed', False),
+                'step': ai_result.get('step', 0),
+                'total_steps': ai_result.get('total_steps', 0)
+            }
+            
+            # 데이터 수집기에 로깅
+            await self.data_collector.log_conversation_turn(
+                session_id=session_id,
+                turn_index=turn_index,
+                situation=session_config.get('situation', 'unknown'),
+                user_level=session_config.get('difficulty', 'beginner'),
+                user_message=user_message,
+                ai_response=ai_result.get('ai_message', ''),
+                response_mode=ai_result.get('mode', session_config.get('mode')),
+                response_time_ms=response_time_ms,
+                context_data=context_data
+            )
+            
+            logger.debug(f"💾 대화 데이터 저장: {session_id}#{turn_index}")
+            
+        except Exception as e:
+            logger.error(f"대화 데이터 로깅 오류: {e}")
     
     async def _process_openai_message(
         self,
@@ -421,7 +522,8 @@ class EnhancedConversationService:
             "session_id": session_id,
             "scenario_title": structured_scenario['title'],
             "first_message": structured_scenario['steps'][0]['ai_message'],
-            "expected_responses": structured_scenario['steps'][0]['expected_responses']
+            "expected_responses": structured_scenario['steps'][0]['expected_responses'],
+            "data_collection": bool(self.data_collector)
         }
     
     def start_scenario(
@@ -696,9 +798,10 @@ class EnhancedConversationService:
         return {
             "level": feedback_level,
             "message": message,
-            "accuracy_score": total_score,
+            "accuracy": total_score,
+            "grammar_score": 0.9,  # 기본값
             "matched_keywords": matched_keywords,
-            "suggestion": feedback_tip if feedback_level == "needs_improvement" else None
+            "suggestions": [feedback_tip] if feedback_level == "needs_improvement" else []
         }
     
     def _generate_scenario_summary(self, scenario_data: Dict) -> Dict[str, Any]:
@@ -711,7 +814,7 @@ class EnhancedConversationService:
             return {"message": "No responses recorded"}
         
         # 전체 정확도 계산
-        total_accuracy = sum(r['feedback']['accuracy_score'] for r in responses)
+        total_accuracy = sum(r['feedback']['accuracy'] for r in responses)
         average_accuracy = total_accuracy / total_responses
         
         # 레벨 분포
@@ -775,7 +878,9 @@ class EnhancedConversationService:
                 "language": session_config['language'],
                 "turn_count": session_config['turn_count'],
                 "conversation_length": conversation_summary['conversation_length'],
-                "started_at": session_config['started_at']
+                "started_at": session_config['started_at'],
+                "last_activity": session_config.get('last_activity', session_config['started_at']),
+                "data_collection": bool(session_config.get('user_id') and self.data_collector)
             }
         
         # 시나리오 세션 확인
@@ -791,30 +896,44 @@ class EnhancedConversationService:
                 "current_step": scenario_data['current_step'] + 1,
                 "total_steps": len(scenario_data['scenario']['steps']),
                 "responses_count": len(scenario_data['user_responses']),
-                "started_at": scenario_data['started_at']
+                "started_at": scenario_data['started_at'],
+                "data_collection": bool(self.data_collector)
             }
         
         else:
             return {"exists": False}
     
     async def end_conversation(self, session_id: str) -> Dict[str, Any]:
-        """대화 세션 종료"""
+        """대화 세션 종료 (데이터 수집 포함)"""
         
         try:
             summary = None
             
             # OpenAI 세션 종료
             if session_id in self.openai_sessions:
+                session_config = self.openai_sessions[session_id]
                 if openai_service:
                     summary = openai_service.get_conversation_summary(session_id)
                     openai_service.clear_conversation_history(session_id)
                 del self.openai_sessions[session_id]
+                
+                # 데이터 수집: 세션 종료 기록
+                if self.data_collector:
+                    await self.data_collector.end_session(session_id, "completed")
             
             # 시나리오 세션 종료
             elif session_id in self.current_scenarios:
                 scenario_data = self.current_scenarios[session_id]
                 summary = self._generate_scenario_summary(scenario_data)
                 del self.current_scenarios[session_id]
+                
+                # 데이터 수집: 세션 종료 기록
+                if self.data_collector:
+                    await self.data_collector.end_session(session_id, "completed")
+            
+            # 응답 시간 측정 데이터 정리
+            if session_id in self.response_start_times:
+                del self.response_start_times[session_id]
             
             return {
                 "success": True,

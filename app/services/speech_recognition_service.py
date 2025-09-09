@@ -7,6 +7,7 @@ import speech_recognition as sr
 from typing import Optional
 import wave
 import logging
+from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
@@ -49,28 +50,31 @@ class SpeechRecognitionService:
             return None
     
     def _recognize_audio_data(self, audio_data: bytes, language: str) -> Optional[str]:
-        """실제 음성 인식 처리 (동기)"""
-        
+        """실제 음성 인식 처리 (동기) - M4A 변환 기능 추가"""
+
         try:
-            # 바이트 데이터를 파일 객체로 변환
-            audio_file = io.BytesIO(audio_data)
-            
-            # WAV 파일로 읽기
-            with sr.AudioFile(audio_file) as source:
-                # 노이즈 조정
+            # 1. 전달받은 오디오 바이트(m4a)를 pydub로 로드합니다.
+            m4a_audio = AudioSegment.from_file(io.BytesIO(audio_data), format="m4a")
+
+            # 2. WAV 형식으로 변환하여 메모리에 새로운 버퍼를 만듭니다.
+            wav_buffer = io.BytesIO()
+            m4a_audio.export(wav_buffer, format="wav")
+            wav_buffer.seek(0)  # 버퍼를 처음부터 읽도록 포인터를 이동시킵니다.
+
+            # 3. 변환된 WAV 데이터가 담긴 버퍼를 sr.AudioFile로 엽니다.
+            with sr.AudioFile(wav_buffer) as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                # 오디오 데이터 읽기
                 audio = self.recognizer.record(source)
-            
-            # Google 음성 인식 API 사용
+
+            # 4. Google 음성 인식 API를 사용합니다.
             text = self.recognizer.recognize_google(
-                audio, 
+                audio,
                 language=language
             )
-            
+
             logger.info(f"음성 인식 성공: {text[:50]}...")
             return text
-            
+
         except sr.UnknownValueError:
             logger.warning("음성을 인식할 수 없습니다")
             return None
