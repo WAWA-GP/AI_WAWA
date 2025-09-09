@@ -29,6 +29,7 @@ try:
     from services.text_to_speech_service import tts_service
     from services.openai_service import openai_service
     from services.level_test_service import level_test_service
+    from services.voice_cloning_service import voice_cloning_service
 except ImportError:
     print("⚠️ 서비스 모듈을 찾을 수 없습니다. 경로를 확인해주세요.")
     import sys
@@ -232,6 +233,38 @@ class PronunciationResponse(BaseModel):
                     "rhythm_score": 88.7
                 },
                 "error": None
+            }
+        }
+
+class VoiceCloneRequest(BaseModel):
+    user_id: str = Field(..., description="사용자 고유 ID")
+    voice_sample_base64: str = Field(..., description="Base64 인코딩된 음성 샘플")
+    voice_name: Optional[str] = Field(None, description="음성 클론 이름")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user123",
+                "voice_sample_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+                "voice_name": "My Voice Clone"
+            }
+        }
+
+class PersonalizedCorrectionRequest(BaseModel):
+    user_id: str = Field(..., description="사용자 고유 ID")
+    target_text: str = Field(..., description="교정할 대상 텍스트")
+    user_audio_base64: str = Field(..., description="사용자 발음 오디오 (Base64)")
+    user_level: str = Field("B1", description="사용자 레벨 (A1-C2)")
+    language: str = Field("en", description="언어 코드")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user123",
+                "target_text": "Can I book a flight to LA now?",
+                "user_audio_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+                "user_level": "B1",
+                "language": "en"
             }
         }
 
@@ -1430,6 +1463,112 @@ async def get_pronunciation_features():
         logger.error(f"기능 정보 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"기능 정보 조회 중 오류가 발생했습니다: {str(e)}")
 
+# === Voice Cloning API ===  
+
+@app.post("/api/voice/clone", tags=["Voice Cloning"],
+         summary="사용자 음성 복제",
+         description="사용자의 음성 샘플로 voice clone을 생성합니다.")
+async def create_voice_clone(request: VoiceCloneRequest):
+    """사용자 음성으로 voice clone 생성"""
+    
+    try:
+        result = await voice_cloning_service.create_user_voice_clone(
+            user_id=request.user_id,
+            voice_sample_base64=request.voice_sample_base64,
+            voice_name=request.voice_name
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Voice clone 생성 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/pronunciation/personalized-correction", tags=["Voice Cloning"],
+         summary="개인화된 발음 교정",
+         description="사용자의 목소리로 완벽한 발음 교정 음성을 생성합니다.")
+async def generate_personalized_pronunciation(request: PersonalizedCorrectionRequest):
+    """사용자 목소리로 완벽한 발음 교정 음성 생성"""
+    
+    try:
+        # 1. 먼저 사용자의 발음 분석
+        pronunciation_analysis = await pronunciation_service.analyze_pronunciation_from_base64(
+            audio_base64=request.user_audio_base64,
+            target_text=request.target_text,
+            user_level=request.user_level
+        )
+        
+        # 2. 분석 결과를 딕셔너리로 변환
+        analysis_dict = {
+            "overall_score": pronunciation_analysis.overall_score,
+            "pitch_score": pronunciation_analysis.pitch_score,
+            "rhythm_score": pronunciation_analysis.rhythm_score,
+            "stress_score": pronunciation_analysis.stress_score,
+            "fluency_score": pronunciation_analysis.fluency_score,
+            "detailed_feedback": pronunciation_analysis.detailed_feedback,
+            "suggestions": pronunciation_analysis.suggestions
+        }
+        
+        # 3. 사용자 음색으로 교정된 발음 생성
+        correction_result = await voice_cloning_service.generate_corrected_pronunciation(
+            user_id=request.user_id,
+            target_text=request.target_text,
+            pronunciation_analysis=analysis_dict,
+            language=request.language
+        )
+        
+        if correction_result["success"]:
+            return {
+                "success": True,
+                "message": "개인화된 발음 교정이 완성되었습니다.",
+                "data": {
+                    "original_analysis": analysis_dict,
+                    "corrected_audio_base64": correction_result["corrected_audio_base64"],
+                    "original_text": request.target_text,
+                    "corrected_text": correction_result.get("corrected_text"),
+                    "corrections_applied": correction_result.get("corrections_applied", []),
+                    "improvement_tips": pronunciation_analysis.suggestions
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": correction_result.get("error", "교정 음성 생성 실패"),
+                "original_analysis": analysis_dict
+            }
+        
+    except Exception as e:
+        logger.error(f"개인화 발음 교정 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/voice/{user_id}/info", tags=["Voice Cloning"],
+        summary="사용자 음성 정보 조회",
+        description="사용자의 voice clone 정보를 조회합니다.")
+async def get_user_voice_info(user_id: str):
+    """사용자 voice clone 정보 조회"""
+    
+    try:
+        voice_info = await voice_cloning_service.get_user_voice_info(user_id)
+        return voice_info
+        
+    except Exception as e:
+        logger.error(f"Voice 정보 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/voice/{user_id}", tags=["Voice Cloning"],
+           summary="사용자 음성 삭제",
+           description="사용자의 voice clone을 삭제합니다.")
+async def delete_user_voice(user_id: str):
+    """사용자 voice clone 삭제"""
+    
+    try:
+        result = await voice_cloning_service.delete_user_voice(user_id)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Voice 삭제 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # === 정보 조회 API ===
 
 @app.get("/api/situations", tags=["Info"],
