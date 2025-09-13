@@ -18,6 +18,139 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# 언어별 기본 어휘 데이터
+BASIC_VOCABULARY = {
+    "ko": ["안녕하세요", "감사합니다", "죄송합니다", "도와주세요", "얼마예요", "어디예요", "언제", "무엇", "왜", "누구"],
+    "en": ["hello", "thank you", "sorry", "help", "how much", "where", "when", "what", "why", "who"],
+    "ja": ["こんにちは", "ありがとうございます", "すみません", "手伝って", "いくらですか", "どこですか", "いつ", "何", "なぜ", "誰"],
+    "zh": ["你好", "谢谢", "对不起", "帮助", "多少钱", "在哪里", "什么时候", "什么", "为什么", "谁"],
+    "fr": ["bonjour", "merci", "désolé", "aide", "combien", "où", "quand", "quoi", "pourquoi", "qui"]
+}
+
+# 언어별 문법 템플릿
+GRAMMAR_TEMPLATES = {
+    "ko": {
+        "A1": {
+            "template": "저는 _____ 입니다.",
+            "options": {"A": "학생", "B": "학생을", "C": "학생이", "D": "학생에"},
+            "correct": "A",
+            "point": "주격 조사"
+        },
+        "A2": {
+            "template": "어제 친구를 _____.",
+            "options": {"A": "만나요", "B": "만났어요", "C": "만날 거예요", "D": "만나고 있어요"},
+            "correct": "B",
+            "point": "과거 시제"
+        }
+    },
+    "en": {
+        "A1": {
+            "template": "She _____ to school every day.",
+            "options": {"A": "go", "B": "goes", "C": "going", "D": "went"},
+            "correct": "B",
+            "point": "present_simple_third_person"
+        },
+        "A2": {
+            "template": "Yesterday, I _____ my homework.",
+            "options": {"A": "do", "B": "did", "C": "doing", "D": "will do"},
+            "correct": "B",
+            "point": "past_simple"
+        }
+    },
+    "ja": {
+        "A1": {
+            "template": "私は学生_____。",
+            "options": {"A": "です", "B": "である", "C": "だ", "D": "でした"},
+            "correct": "A",
+            "point": "丁寧語"
+        },
+        "A2": {
+            "template": "昨日映画を_____。",
+            "options": {"A": "見ます", "B": "見ました", "C": "見る", "D": "見て"},
+            "correct": "B",
+            "point": "過去形"
+        }
+    },
+    "zh": {
+        "A1": {
+            "template": "我___中国人。",
+            "options": {"A": "是", "B": "在", "C": "有", "D": "做"},
+            "correct": "A",
+            "point": "系动词"
+        },
+        "A2": {
+            "template": "昨天我___了一本书。",
+            "options": {"A": "看", "B": "看着", "C": "看了", "D": "在看"},
+            "correct": "C",
+            "point": "完成体"
+        }
+    },
+    "fr": {
+        "A1": {
+            "template": "Je _____ étudiant.",
+            "options": {"A": "suis", "B": "es", "C": "est", "D": "sommes"},
+            "correct": "A",
+            "point": "être_conjugation"
+        },
+        "A2": {
+            "template": "Hier, j'_____ au cinéma.",
+            "options": {"A": "vais", "B": "suis allé", "C": "irai", "D": "vais aller"},
+            "correct": "B",
+            "point": "passé_composé"
+        }
+    }
+}
+
+# 언어별 독해 지문
+READING_PASSAGES = {
+    "ko": {
+        "A1": {
+            "passage": "저는 마이클이에요. 미국에서 왔어요. 한국어를 공부하고 있어요. 매일 한국어 수업을 들어요. 한국 음식을 좋아해요. 김치찌개가 맛있어요.",
+            "question": "마이클은 어느 나라에서 왔어요?",
+            "options": {"A": "미국", "B": "영국", "C": "캐나다", "D": "호주"},
+            "correct": "A"
+        },
+        "A2": {
+            "passage": "어제 친구와 명동에 갔어요. 쇼핑을 했어요. 옷을 많이 샀어요. 점심으로 불고기를 먹었어요. 정말 맛있었어요. 카페에서 커피도 마셨어요.",
+            "question": "어제 점심에 뭘 먹었어요?",
+            "options": {"A": "김치찌개", "B": "불고기", "C": "비빔밥", "D": "냉면"},
+            "correct": "B"
+        }
+    },
+    "en": {
+        "A1": {
+            "passage": "Tom is a student. He is 20 years old. He lives in New York. He studies English at university. He likes reading books and playing soccer.",
+            "question": "What does Tom like to do?",
+            "options": {"A": "Reading and soccer", "B": "Watching TV", "C": "Cooking", "D": "Swimming"},
+            "correct": "A"
+        }
+    },
+    "ja": {
+        "A1": {
+            "passage": "田中さんは会社員です。毎朝8時に家を出て、電車で会社に行きます。昼休みは同僚と一緒に食事をします。",
+            "question": "田中さんはいつ家を出ますか？",
+            "options": {"A": "7時", "B": "8時", "C": "9時", "D": "10時"},
+            "correct": "B"
+        }
+    },
+    "zh": {
+        "A1": {
+            "passage": "李明是一名学生。他今年22岁，在北京大学学习中文。他每天坐地铁去学校，晚上在图书馆学习。",
+            "question": "李明怎么去学校？",
+            "options": {"A": "坐地铁", "B": "坐公交", "C": "开车", "D": "骑自行车"},
+            "correct": "A"
+        }
+    },
+    "fr": {
+        "A1": {
+            "passage": "Marie est étudiante à Paris. Elle a 19 ans et étudie le français. Chaque matin, elle prend le métro pour aller à l'université.",
+            "question": "Comment Marie va-t-elle à l'université ?",
+            "options": {"A": "En métro", "B": "En bus", "C": "En voiture", "D": "À pied"},
+            "correct": "A"
+        }
+    }
+}
+
 class QuickStartLanguageAPI:
     """무료 API들을 활용한 언어 데이터 서비스"""
     
@@ -477,10 +610,28 @@ class LevelTestService:
                 logger.error(f"데이터셋 초기화 오류: {e}")
     
     async def start_level_test(self, user_id: str, language: str = "english") -> Dict:
-        """레벨 테스트 시작"""
+        """레벨 테스트 시작 - 5개 언어 지원"""
         
         try:
             await self._ensure_initialized()
+            
+            # 언어 매핑 및 검증
+            language_map = {
+                "korean": "ko",
+                "english": "en", 
+                "japanese": "ja",
+                "chinese": "zh",
+                "french": "fr"
+            }
+            
+            language_code = language_map.get(language.lower(), "en")
+            
+            # 지원하지 않는 언어 체크
+            if language_code not in ["ko", "en", "ja", "zh", "fr"]:
+                return {
+                    "success": False,
+                    "error": f"지원하지 않는 언어: {language}. 지원 언어: ko, en, ja, zh, fr"
+                }
             
             session_id = f"level_test_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
@@ -488,7 +639,7 @@ class LevelTestService:
             session_data = {
                 "session_id": session_id,
                 "user_id": user_id,
-                "language": language,
+                "language": language_code,  # 언어 코드 저장
                 "start_time": datetime.now().isoformat(),
                 "current_question": 0,
                 "total_questions": 15,
@@ -502,18 +653,30 @@ class LevelTestService:
             
             self.active_sessions[session_id] = session_data
             
-            # 첫 번째 문제 생성
-            first_question = await self._generate_question(session_data, "vocabulary", "A2")
+            # 첫 번째 문제 생성 (언어별)
+            first_question = await self._generate_question_multilang(
+                session_data, "vocabulary", "A2", language_code
+            )
             
-            logger.info(f"레벨 테스트 시작: {session_id}")
+            language_names = {
+                "ko": "한국어",
+                "en": "English", 
+                "ja": "日本語",
+                "zh": "中文",
+                "fr": "Français"
+            }
+            
+            logger.info(f"레벨 테스트 시작: {session_id} ({language_names.get(language_code)})")
             
             return {
                 "success": True,
                 "session_id": session_id,
+                "language": language_code,
+                "language_name": language_names.get(language_code),
                 "estimated_duration": "10-15 minutes",
                 "total_questions": "10-15 (adaptive)",
                 "current_question": first_question,
-                "data_sources": ["official_vocabulary_profiles", "frequency_analysis", "verified_definitions"],
+                "data_sources": ["multilingual_vocabulary", "grammar_templates", "reading_passages"],
                 "progress": {
                     "completed": 0,
                     "total": session_data["total_questions"],
@@ -522,45 +685,334 @@ class LevelTestService:
             }
             
         except Exception as e:
-            logger.error(f"레벨 테스트 시작 오류: {e}")
+            logger.error(f"다국어 레벨 테스트 시작 오류: {e}")
             return {
                 "success": False,
                 "error": f"레벨 테스트를 시작할 수 없습니다: {str(e)}"
             }
     
     async def _generate_question(self, session: Dict, skill: str, level: str) -> Dict:
-        """문제 생성 (다중 소스)"""
+        """문제 생성 (다중 소스) - 다국어 지원 추가"""
         
+        # 세션에서 언어 코드 추출
+        language = session.get("language", "en")
+        
+        # 영어가 아닌 경우, 다국어 문제 생성 우선 시도
+        if language != "en":
+            try:
+                logger.debug(f"다국어 문제 생성 시도: {language}")
+                question = await self._generate_question_multilang(session, skill, level, language)
+                
+                if question and question.get("question"):
+                    session["question_sources"].append("multilingual")
+                    logger.debug(f"다국어 문제 생성 성공: {language}")
+                    return question
+                else:
+                    logger.warning(f"다국어 문제 생성 실패, 영어로 대체: {language}")
+                    
+            except Exception as e:
+                logger.warning(f"다국어 문제 생성 오류, 영어로 대체 ({language}): {e}")
+        
+        # 영어 문제 또는 다국어 실패 시 기존 로직 실행
         try:
-            # 1. 우선 API 기반 검증된 문제 생성 시도
+            # 1. 우선 API 기반 검증된 문제 생성 시도 (영어)
             api_questions = await self.quick_api.generate_verified_questions(level, skill, 1)
             
             if api_questions:
                 question = api_questions[0]
                 question["source"] = "verified_api"
+                question["language"] = "en"  # 언어 정보 추가
                 session["question_sources"].append("verified_api")
                 return question
             
-            # 2. OpenAI 백업
+            # 2. OpenAI 백업 (영어)
             elif self.openai_client:
                 question = await self._generate_openai_question(session, skill, level)
                 question["source"] = "openai_backup"
+                question["language"] = "en"  # 언어 정보 추가
                 session["question_sources"].append("openai_backup")
                 return question
             
-            # 3. 대체 문제
+            # 3. 대체 문제 (언어별)
             else:
-                question = self._get_fallback_question(skill, level, session["current_question"] + 1)
+                if language != "en":
+                    # 다국어 대체 문제
+                    question = self._get_fallback_question_multilang(skill, level, language, session["current_question"] + 1)
+                else:
+                    # 영어 대체 문제
+                    question = self._get_fallback_question(skill, level, session["current_question"] + 1)
+                    question["language"] = "en"
+                
                 question["source"] = "fallback"
                 session["question_sources"].append("fallback")
                 return question
                 
         except Exception as e:
             logger.error(f"문제 생성 오류: {e}")
-            question = self._get_fallback_question(skill, level, session["current_question"] + 1)
+            
+            # 최종 대체 (언어별)
+            if language != "en":
+                question = self._get_fallback_question_multilang(skill, level, language, session["current_question"] + 1)
+            else:
+                question = self._get_fallback_question(skill, level, session["current_question"] + 1)
+                question["language"] = "en"
+            
             question["source"] = "fallback"
             session["question_sources"].append("fallback")
             return question
+        
+    async def _generate_question_multilang(
+        self, 
+        session: Dict, 
+        skill: str, 
+        level: str, 
+        language: str
+    ) -> Dict:
+        """언어별 문제 생성"""
+        
+        try:
+            question_id = f"q_{language}_{session['session_id']}_{session['current_question']}"
+            
+            if skill == "vocabulary":
+                return self._create_vocab_question_multilang(level, language, question_id)
+            elif skill == "grammar":
+                return self._create_grammar_question_multilang(level, language, question_id)
+            elif skill == "reading":
+                return self._create_reading_question_multilang(level, language, question_id)
+            else:
+                return self._create_listening_question_multilang(level, language, question_id)
+                
+        except Exception as e:
+            logger.error(f"다국어 문제 생성 오류: {e}")
+            return self._get_fallback_question_multilang(skill, level, language, session["current_question"] + 1)
+    
+    def _create_vocab_question_multilang(self, level: str, language: str, question_id: str) -> Dict:
+        """언어별 어휘 문제 생성"""
+        
+        vocab_list = BASIC_VOCABULARY.get(language, BASIC_VOCABULARY["en"])
+        
+        if level == "A1":
+            word_index = 0  # 첫 번째 기본 단어
+        elif level == "A2":
+            word_index = min(3, len(vocab_list) - 1)
+        else:
+            word_index = min(6, len(vocab_list) - 1)
+        
+        word = vocab_list[word_index]
+        
+        # 언어별 문제 형식
+        question_formats = {
+            "ko": f"'{word}'의 의미는 무엇입니까?",
+            "en": f"What does '{word}' mean?",
+            "ja": f"'{word}'の意味は何ですか？",
+            "zh": f"'{word}'是什么意思？",
+            "fr": f"Que signifie '{word}' ?"
+        }
+        
+        # 언어별 선택지 (기본적인 의미)
+        meaning_options = {
+            "ko": {
+                "안녕하세요": {"A": "인사말", "B": "작별 인사", "C": "감사 인사", "D": "사과"},
+                "감사합니다": {"A": "인사말", "B": "감사 표현", "C": "사과", "D": "질문"},
+                "죄송합니다": {"A": "사과", "B": "인사말", "C": "감사", "D": "질문"},
+                "도와주세요": {"A": "도움 요청", "B": "인사말", "C": "감사", "D": "작별"}
+            },
+            "en": {
+                "hello": {"A": "greeting", "B": "goodbye", "C": "thanks", "D": "sorry"},
+                "thank you": {"A": "greeting", "B": "expression of gratitude", "C": "apology", "D": "question"},
+                "sorry": {"A": "apology", "B": "greeting", "C": "thanks", "D": "question"},
+                "help": {"A": "assistance", "B": "greeting", "C": "goodbye", "D": "thanks"}
+            },
+            "ja": {
+                "こんにちは": {"A": "挨拶", "B": "さようなら", "C": "感謝", "D": "謝罪"},
+                "ありがとうございます": {"A": "挨拶", "B": "感謝の表現", "C": "謝罪", "D": "質問"},
+                "すみません": {"A": "謝罪", "B": "挨拶", "C": "感謝", "D": "質問"},
+                "手伝って": {"A": "助けを求める", "B": "挨拶", "C": "感謝", "D": "さようなら"}
+            },
+            "zh": {
+                "你好": {"A": "问候", "B": "再见", "C": "谢谢", "D": "对不起"},
+                "谢谢": {"A": "问候", "B": "感谢表达", "C": "道歉", "D": "问题"},
+                "对不起": {"A": "道歉", "B": "问候", "C": "谢谢", "D": "问题"},
+                "帮助": {"A": "援助", "B": "问候", "C": "再见", "D": "谢谢"}
+            },
+            "fr": {
+                "bonjour": {"A": "salutation", "B": "au revoir", "C": "merci", "D": "pardon"},
+                "merci": {"A": "salutation", "B": "expression de gratitude", "C": "excuse", "D": "question"},
+                "désolé": {"A": "excuse", "B": "salutation", "C": "merci", "D": "question"},
+                "aide": {"A": "assistance", "B": "salutation", "C": "au revoir", "D": "merci"}
+            }
+        }
+        
+        options = meaning_options.get(language, {}).get(word, {"A": "option1", "B": "option2", "C": "option3", "D": "option4"})
+        
+        return {
+            "question_id": question_id,
+            "skill": "vocabulary",
+            "level": level,
+            "language": language,
+            "question": question_formats.get(language, question_formats["en"]),
+            "options": options,
+            "correct_answer": "A",  # 첫 번째가 항상 정답
+            "explanation": f"'{word}' 의미 설명",
+            "word": word,
+            "source": "multilingual_vocabulary"
+        }
+    
+    def _create_grammar_question_multilang(self, level: str, language: str, question_id: str) -> Dict:
+        """언어별 문법 문제 생성"""
+        
+        templates = GRAMMAR_TEMPLATES.get(language, GRAMMAR_TEMPLATES["en"])
+        template = templates.get(level, templates.get("A1", {}))
+        
+        if not template:
+            return self._get_fallback_question_multilang("grammar", level, language, 1)
+        
+        return {
+            "question_id": question_id,
+            "skill": "grammar",
+            "level": level,
+            "language": language,
+            "question": template["template"],
+            "options": template["options"],
+            "correct_answer": template["correct"],
+            "explanation": f"문법 포인트: {template['point']}",
+            "grammar_point": template["point"],
+            "source": "grammar_templates"
+        }
+    
+    def _create_reading_question_multilang(self, level: str, language: str, question_id: str) -> Dict:
+        """언어별 독해 문제 생성"""
+        
+        passages = READING_PASSAGES.get(language, READING_PASSAGES["en"])
+        passage_data = passages.get(level, passages.get("A1", {}))
+        
+        if not passage_data:
+            return self._get_fallback_question_multilang("reading", level, language, 1)
+        
+        return {
+            "question_id": question_id,
+            "skill": "reading",
+            "level": level,
+            "language": language,
+            "passage": passage_data["passage"],
+            "question": passage_data["question"],
+            "options": passage_data["options"],
+            "correct_answer": passage_data["correct"],
+            "explanation": "지문에서 답을 찾을 수 있습니다.",
+            "passage_length": len(passage_data["passage"].split()),
+            "source": "reading_passages"
+        }
+    
+    def _create_listening_question_multilang(self, level: str, language: str, question_id: str) -> Dict:
+        """언어별 듣기 문제 생성"""
+        
+        listening_scenarios = {
+            "ko": {
+                "A1": {
+                    "scenario": "누군가 말합니다: '안녕하세요, 저는 김민수입니다. 한국에서 왔어요. 만나서 반가워요.'",
+                    "question": "김민수는 어느 나라에서 왔어요?",
+                    "options": {"A": "한국", "B": "일본", "C": "중국", "D": "미국"},
+                    "correct": "A"
+                },
+                "A2": {
+                    "scenario": "안내방송을 듣습니다: '부산행 KTX는 3번 승강장에서 오후 2시 30분에 출발합니다. 승차권을 준비해주세요.'",
+                    "question": "부산행 KTX는 몇 시에 출발합니까?",
+                    "options": {"A": "오후 2시", "B": "오후 2시 30분", "C": "오후 3시", "D": "오후 3시 30분"},
+                    "correct": "B"
+                }
+            },
+            "en": {
+                "A1": {
+                    "scenario": "You hear someone say: 'Hello, my name is Sarah. I am from Canada. Nice to meet you.'",
+                    "question": "Where is Sarah from?",
+                    "options": {"A": "Canada", "B": "America", "C": "England", "D": "Australia"},
+                    "correct": "A"
+                },
+                "A2": {
+                    "scenario": "You hear an announcement: 'The train to Manchester will depart from platform 3 at 2:30 PM. Please have your tickets ready.'",
+                    "question": "What time does the train leave?",
+                    "options": {"A": "2:00 PM", "B": "2:30 PM", "C": "3:00 PM", "D": "3:30 PM"},
+                    "correct": "B"
+                }
+            },
+            "ja": {
+                "A1": {
+                    "scenario": "誰かが言います：「こんにちは、私は田中です。日本から来ました。よろしくお願いします。」",
+                    "question": "田中さんはどこから来ましたか？",
+                    "options": {"A": "日本", "B": "韓国", "C": "中国", "D": "アメリカ"},
+                    "correct": "A"
+                }
+            },
+            "zh": {
+                "A1": {
+                    "scenario": "你听到有人说：'你好，我叫李明。我来自中国。很高兴认识你。'",
+                    "question": "李明来自哪里？",
+                    "options": {"A": "中国", "B": "日本", "C": "韩国", "D": "美国"},
+                    "correct": "A"
+                }
+            },
+            "fr": {
+                "A1": {
+                    "scenario": "Vous entendez quelqu'un dire : 'Bonjour, je m'appelle Marie. Je viens de France. Enchanté de vous rencontrer.'",
+                    "question": "D'où vient Marie ?",
+                    "options": {"A": "France", "B": "Canada", "C": "Belgique", "D": "Suisse"},
+                    "correct": "A"
+                }
+            }
+        }
+        
+        scenario = listening_scenarios.get(language, listening_scenarios["en"]).get(level, 
+                   listening_scenarios.get(language, listening_scenarios["en"]).get("A1", {}))
+        
+        if not scenario:
+            return self._get_fallback_question_multilang("listening", level, language, 1)
+        
+        return {
+            "question_id": question_id,
+            "skill": "listening",
+            "level": level,
+            "language": language,
+            "audio_scenario": scenario["scenario"],
+            "question": scenario["question"],
+            "options": scenario["options"],
+            "correct_answer": scenario["correct"],
+            "explanation": "오디오 정보를 바탕으로 답했습니다.",
+            "source": "listening_scenarios"
+        }
+    
+    def _get_fallback_question_multilang(self, skill: str, level: str, language: str, question_number: int) -> Dict:
+        """언어별 대체 문제"""
+        
+        fallback_questions = {
+            "ko": "이것은 샘플 문제입니다.",
+            "en": "This is a sample question.",
+            "ja": "これはサンプル問題です。",
+            "zh": "这是一个示例问题。",
+            "fr": "Ceci est une question d'exemple."
+        }
+        
+        fallback_options = {
+            "ko": {"A": "옵션 A", "B": "옵션 B", "C": "옵션 C", "D": "옵션 D"},
+            "en": {"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D"},
+            "ja": {"A": "選択肢A", "B": "選択肢B", "C": "選択肢C", "D": "選択肢D"},
+            "zh": {"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"},
+            "fr": {"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D"}
+        }
+        
+        question_text = fallback_questions.get(language, fallback_questions["en"])
+        options = fallback_options.get(language, fallback_options["en"])
+        
+        return {
+            "question_id": f"fallback_{language}_{skill}_{level}_{question_number}",
+            "skill": skill,
+            "level": level,
+            "language": language,
+            "question": question_text,
+            "options": options,
+            "correct_answer": "A",
+            "explanation": "대체 문제입니다.",
+            "source": "fallback"
+        }
     
     async def _generate_openai_question(self, session: Dict, skill: str, level: str) -> Dict:
         """OpenAI 기반 문제 생성"""

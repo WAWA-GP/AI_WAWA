@@ -502,7 +502,7 @@ class EnhancedConversationService:
             scenario = random.choice(scenarios)
         
         # 시나리오 구조화
-        structured_scenario = self._create_scenario_structure(scenario, situation, difficulty)
+        structured_scenario = self._create_scenario_structure(scenario, situation, difficulty, language)
         
         # 세션에 저장
         self.current_scenarios[session_id] = {
@@ -664,82 +664,366 @@ class EnhancedConversationService:
         
         return found_phrases[:5]  # 최대 5개
     
-    def _create_scenario_structure(self, base_scenario: Dict, situation: str, difficulty: str) -> Dict:
-        """시나리오를 구조화된 대화 단계로 변환"""
+    def _create_scenario_structure(self, base_scenario: Dict, situation: str, difficulty: str, language: str = "en") -> Dict:
+        """언어별 시나리오 구조 생성"""
         
+        # 언어별 시나리오 템플릿
         scenario_templates = {
-            'airport': {
-                'title': 'Airport Check-in',
-                'steps': [
-                    {
-                        'step': 1,
-                        'ai_message': 'Good morning! Welcome to the airport. How can I help you today?',
-                        'expected_responses': ['check in', 'flight', 'need help', 'boarding pass'],
-                        'feedback_tips': 'Try saying: "I need to check in for my flight"'
-                    },
-                    {
-                        'step': 2,
-                        'ai_message': 'May I see your passport and boarding pass?',
-                        'expected_responses': ['here', 'sure', 'course', 'you are'],
-                        'feedback_tips': 'A polite way to respond: "Here you are" or "Of course"'
-                    }
-                ]
+            'ko': {
+                'airport': {
+                    'title': '공항 체크인',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '안녕하세요! 인천공항에 오신 것을 환영합니다. 무엇을 도와드릴까요?',
+                            'expected_responses': ['체크인', '비행기', '도움', '탑승', 'check in'],
+                            'feedback_tips': '이렇게 말해보세요: "체크인 하고 싶어요" 또는 "Check-in please"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '여권과 항공표를 보여주세요.',
+                            'expected_responses': ['여기', '네', '드려요', '확인', 'here'],
+                            'feedback_tips': '정중하게 답하기: "네, 여기 있어요" 또는 "Here you are"'
+                        }
+                    ]
+                },
+                'restaurant': {
+                    'title': '한국 레스토랑에서 주문하기',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '안녕하세요! 우리 식당에 오신 것을 환영해요. 몇 분이세요?',
+                            'expected_responses': ['명', '사람', '테이블', 'people', 'table'],
+                            'feedback_tips': '"2명이에요" 또는 "Table for 2 people please"라고 말해보세요'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '이쪽으로 오세요. 메뉴 드릴게요. 뭐 드시고 싶어요?',
+                            'expected_responses': ['메뉴', '추천', '뭐', '음식', 'menu', 'recommend'],
+                            'feedback_tips': '"메뉴 보여주세요" 또는 "What do you recommend?"'
+                        }
+                    ]
+                },
+                'hotel': {
+                    'title': '호텔 체크인',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '안녕하세요! 호텔에 오신 것을 환영합니다. 예약하셨나요?',
+                            'expected_responses': ['예약', '방', '체크인', 'reservation', 'room'],
+                            'feedback_tips': '"예약했어요" 또는 "I have a reservation"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '성함이 어떻게 되세요?',
+                            'expected_responses': ['이름', '성함', 'name', 'my name'],
+                            'feedback_tips': '"제 이름은 [이름]이에요" 또는 "My name is [name]"'
+                        }
+                    ]
+                },
+                'street': {
+                    'title': '길 묻기',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '안녕하세요! 길을 찾고 계세요?',
+                            'expected_responses': ['네', '길', '어디', '찾아요', 'yes', 'looking'],
+                            'feedback_tips': '"네, 길을 찾고 있어요" 또는 "Yes, I\'m looking for..."'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '어디로 가시려고 해요?',
+                            'expected_responses': ['명동', '강남', '역', '어떻게', 'how', 'where'],
+                            'feedback_tips': '"[장소]에 가고 싶어요" 또는 "How do I get to [place]?"'
+                        }
+                    ]
+                }
             },
-            'restaurant': {
-                'title': 'Restaurant Ordering',
-                'steps': [
-                    {
-                        'step': 1,
-                        'ai_message': 'Good evening! Welcome to our restaurant. Do you have a reservation?',
-                        'expected_responses': ['reservation', 'table', 'yes', 'under'],
-                        'feedback_tips': 'You can say: "Yes, under [your name]" or "Table for [number] please"'
-                    },
-                    {
-                        'step': 2,
-                        'ai_message': 'Right this way. Here are your menus. Can I get you something to drink?',
-                        'expected_responses': ['water', 'wine', 'coffee', 'drink'],
-                        'feedback_tips': 'Simple responses work: "Water please" or "Coffee, please"'
-                    }
-                ]
+            'en': {
+                'airport': {
+                    'title': 'Airport Check-in',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Good morning! Welcome to the airport. How can I help you today?',
+                            'expected_responses': ['check in', 'flight', 'need help', 'boarding pass'],
+                            'feedback_tips': 'Try saying: "I need to check in for my flight"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'May I see your passport and boarding pass?',
+                            'expected_responses': ['here', 'sure', 'course', 'you are'],
+                            'feedback_tips': 'A polite way to respond: "Here you are" or "Of course"'
+                        }
+                    ]
+                },
+                'restaurant': {
+                    'title': 'Restaurant Ordering',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Good evening! Welcome to our restaurant. Do you have a reservation?',
+                            'expected_responses': ['reservation', 'table', 'yes', 'under'],
+                            'feedback_tips': 'You can say: "Yes, under [your name]" or "Table for [number] please"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'Right this way. Here are your menus. Can I get you something to drink?',
+                            'expected_responses': ['water', 'wine', 'coffee', 'drink'],
+                            'feedback_tips': 'Simple responses work: "Water please" or "Coffee, please"'
+                        }
+                    ]
+                },
+                'hotel': {
+                    'title': 'Hotel Check-in',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Good afternoon! Welcome to our hotel. How can I help you?',
+                            'expected_responses': ['check in', 'reservation', 'room', 'booking'],
+                            'feedback_tips': 'Try saying: "I have a reservation" or "I\'d like to check in"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'May I have your name and ID please?',
+                            'expected_responses': ['here', 'sure', 'name is', 'id'],
+                            'feedback_tips': 'You can say: "Sure, here you are" or "My name is..."'
+                        }
+                    ]
+                },
+                'street': {
+                    'title': 'Asking for Directions',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'You look lost. Can I help you find something?',
+                            'expected_responses': ['yes', 'help', 'looking for', 'where'],
+                            'feedback_tips': 'Try saying: "Yes, I\'m looking for..." or "Can you help me find..."'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'Go straight ahead for two blocks, then turn left.',
+                            'expected_responses': ['thank you', 'thanks', 'got it', 'understand'],
+                            'feedback_tips': 'A polite response: "Thank you very much" or "I understand"'
+                        }
+                    ]
+                }
             },
-            'hotel': {
-                'title': 'Hotel Check-in',
-                'steps': [
-                    {
-                        'step': 1,
-                        'ai_message': 'Good afternoon! Welcome to our hotel. How can I help you?',
-                        'expected_responses': ['check in', 'reservation', 'room', 'booking'],
-                        'feedback_tips': 'Try saying: "I have a reservation" or "I\'d like to check in"'
-                    },
-                    {
-                        'step': 2,
-                        'ai_message': 'May I have your name and ID please?',
-                        'expected_responses': ['here', 'sure', 'name is', 'id'],
-                        'feedback_tips': 'You can say: "Sure, here you are" or "My name is..."'
-                    }
-                ]
+            'ja': {
+                'airport': {
+                    'title': '空港でのチェックイン',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'おはようございます！空港へようこそ。何かお手伝いできることはありますか？',
+                            'expected_responses': ['チェックイン', 'フライト', '手伝い', '搭乗'],
+                            'feedback_tips': 'こう言ってみてください：「チェックインをお願いします」'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'パスポートと搭乗券を見せていただけますか？',
+                            'expected_responses': ['はい', 'どうぞ', 'こちら', 'お願い'],
+                            'feedback_tips': '丁寧な答え方：「はい、こちらです」または「どうぞ」'
+                        }
+                    ]
+                },
+                'restaurant': {
+                    'title': 'レストランでの注文',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'こんばんは！レストランへようこそ。ご予約はされていますか？',
+                            'expected_responses': ['予約', 'テーブル', 'はい', '名前'],
+                            'feedback_tips': '「はい、予約しています」または「[名前]で予約を取りました」'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'こちらへどうぞ。メニューをお持ちします。お飲み物はいかがですか？',
+                            'expected_responses': ['水', 'ビール', 'ワイン', '飲み物'],
+                            'feedback_tips': '「お水をお願いします」または「ビールをください」'
+                        }
+                    ]
+                },
+                'hotel': {
+                    'title': 'ホテルでのチェックイン',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'こんにちは！ホテルへようこそ。何かお手伝いできることはありますか？',
+                            'expected_responses': ['チェックイン', '予約', '部屋', '宿泊'],
+                            'feedback_tips': '「チェックインをお願いします」または「予約を確認してください」'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'お名前とIDを拝見できますでしょうか？',
+                            'expected_responses': ['はい', 'どうぞ', '名前', 'こちら'],
+                            'feedback_tips': '「はい、こちらです」または「私の名前は...です」'
+                        }
+                    ]
+                },
+                'street': {
+                    'title': '道案内',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '道に迷われたようですね。何かお探しですか？',
+                            'expected_responses': ['探している', 'どこ', '手伝い', '道'],
+                            'feedback_tips': '「[場所]を探しています」または「道を教えてください」'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'どちらへ行かれますか？',
+                            'expected_responses': ['駅', '銀座', 'どうやって', '行き方'],
+                            'feedback_tips': '「[場所]に行きたいです」または「行き方を教えてください」'
+                        }
+                    ]
+                }
             },
-            'street': {
-                'title': 'Asking for Directions',
-                'steps': [
-                    {
-                        'step': 1,
-                        'ai_message': 'You look lost. Can I help you find something?',
-                        'expected_responses': ['yes', 'help', 'looking for', 'where'],
-                        'feedback_tips': 'Try saying: "Yes, I\'m looking for..." or "Can you help me find..."'
-                    },
-                    {
-                        'step': 2,
-                        'ai_message': 'Go straight ahead for two blocks, then turn left.',
-                        'expected_responses': ['thank you', 'thanks', 'got it', 'understand'],
-                        'feedback_tips': 'A polite response: "Thank you very much" or "I understand"'
-                    }
-                ]
+            'zh': {
+                'airport': {
+                    'title': '机场值机',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '早上好！欢迎来到机场。我能为您做些什么？',
+                            'expected_responses': ['值机', '航班', '帮助', '登机'],
+                            'feedback_tips': '可以这样说："我需要办理值机手续"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '请出示您的护照和登机牌？',
+                            'expected_responses': ['这里', '好的', '给您', '请看'],
+                            'feedback_tips': '礼貌的回答："好的，给您" 或 "请看"'
+                        }
+                    ]
+                },
+                'restaurant': {
+                    'title': '餐厅点餐',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '晚上好！欢迎来到我们餐厅。您有预订吗？',
+                            'expected_responses': ['预订', '桌子', '有', '名字'],
+                            'feedback_tips': '可以说："有预订，在[姓名]名下" 或 "要[人数]人的桌子"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '请这边走。这是菜单。您想喝点什么？',
+                            'expected_responses': ['水', '茶', '啤酒', '饮料'],
+                            'feedback_tips': '简单回答："请给我水" 或 "我要茶"'
+                        }
+                    ]
+                },
+                'hotel': {
+                    'title': '酒店入住',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '下午好！欢迎来到我们酒店。我能为您做些什么？',
+                            'expected_responses': ['入住', '预订', '房间', '登记'],
+                            'feedback_tips': '"我要办理入住手续" 或 "我有预订"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '请出示您的姓名和身份证件？',
+                            'expected_responses': ['这里', '好的', '姓名', '身份证'],
+                            'feedback_tips': '"好的，这里" 或 "我的名字是..."'
+                        }
+                    ]
+                },
+                'street': {
+                    'title': '问路',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': '您看起来迷路了。我能帮您找什么地方吗？',
+                            'expected_responses': ['找', '哪里', '帮助', '路'],
+                            'feedback_tips': '"我在找[地点]" 或 "请告诉我路怎么走"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': '您要去哪里？',
+                            'expected_responses': ['天安门', '北京站', '怎么走', '地铁'],
+                            'feedback_tips': '"我要去[地点]" 或 "怎么走最快？"'
+                        }
+                    ]
+                }
+            },
+            'fr': {
+                'airport': {
+                    'title': 'Enregistrement à l\'aéroport',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Bonjour ! Bienvenue à l\'aéroport. Comment puis-je vous aider aujourd\'hui ?',
+                            'expected_responses': ['enregistrement', 'vol', 'aide', 'embarquement'],
+                            'feedback_tips': 'Essayez de dire : "J\'aimerais m\'enregistrer pour mon vol"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'Puis-je voir votre passeport et votre carte d\'embarquement ?',
+                            'expected_responses': ['voici', 'bien sûr', 'tenez', 'voilà'],
+                            'feedback_tips': 'Une façon polie de répondre : "Voici" ou "Bien sûr"'
+                        }
+                    ]
+                },
+                'restaurant': {
+                    'title': 'Commande au restaurant',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Bonsoir ! Bienvenue dans notre restaurant. Avez-vous une réservation ?',
+                            'expected_responses': ['réservation', 'table', 'oui', 'nom'],
+                            'feedback_tips': 'Vous pouvez dire : "Oui, au nom de [votre nom]" ou "Table pour [nombre] personnes"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'Par ici, s\'il vous plaît. Voici les menus. Que puis-je vous offrir à boire ?',
+                            'expected_responses': ['eau', 'vin', 'café', 'boisson'],
+                            'feedback_tips': 'Réponses simples : "De l\'eau, s\'il vous plaît" ou "Un café"'
+                        }
+                    ]
+                },
+                'hotel': {
+                    'title': 'Enregistrement à l\'hôtel',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Bon après-midi ! Bienvenue dans notre hôtel. Comment puis-je vous aider ?',
+                            'expected_responses': ['enregistrement', 'réservation', 'chambre', 'inscription'],
+                            'feedback_tips': '"J\'aimerais m\'enregistrer" ou "J\'ai une réservation"'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'Puis-je avoir votre nom et votre pièce d\'identité ?',
+                            'expected_responses': ['voici', 'bien sûr', 'nom', 'identité'],
+                            'feedback_tips': '"Bien sûr, voici" ou "Mon nom est..."'
+                        }
+                    ]
+                },
+                'street': {
+                    'title': 'Demander son chemin',
+                    'steps': [
+                        {
+                            'step': 1,
+                            'ai_message': 'Vous semblez perdu. Puis-je vous aider à trouver quelque chose ?',
+                            'expected_responses': ['oui', 'aide', 'cherche', 'où'],
+                            'feedback_tips': '"Oui, je cherche..." ou "Pouvez-vous m\'aider à trouver..."'
+                        },
+                        {
+                            'step': 2,
+                            'ai_message': 'Où voulez-vous aller ?',
+                            'expected_responses': ['Louvre', 'gare', 'comment', 'métro'],
+                            'feedback_tips': '"Je veux aller au [lieu]" ou "Comment aller à..."'
+                        }
+                    ]
+                }
             }
         }
         
-        # 템플릿에서 가져오거나 기본 구조 생성
-        template = scenario_templates.get(situation, {
+        # 언어별 템플릿 선택
+        templates = scenario_templates.get(language, scenario_templates['en'])
+        template = templates.get(situation, templates.get('airport', {
             'title': f'{situation.title()} Conversation',
             'steps': [
                 {
@@ -749,7 +1033,7 @@ class EnhancedConversationService:
                     'feedback_tips': 'Try greeting back politely'
                 }
             ]
-        })
+        }))
         
         return template
     
