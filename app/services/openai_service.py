@@ -247,19 +247,33 @@ L'utilisateur apprend le français, donc :
             }
 
     def _get_system_prompt(self, situation: str, language: str, difficulty: str) -> str:
-        """상황과 언어에 맞는 시스템 프롬프트 생성"""
+        """상황과 언어, 그리고 원하는 출력 형식에 맞는 시스템 프롬프트를 생성합니다."""
 
+        # 1. 기존과 동일하게 기본 역할 프롬프트를 가져옵니다.
         base_prompt = self.system_prompts.get(language, self.system_prompts["en"])
         situation_prompt = base_prompt.get(situation, base_prompt.get("airport", ""))
 
-        # 난이도별 추가 지시사항
-        difficulty_instructions = {
-            "beginner": "\n추가 지시: 매우 간단한 문장을 사용하고, 기본 어휘만 사용하세요. 천천히 설명해주세요.",
-            "intermediate": "\n추가 지시: 적당한 난이도의 문장을 사용하고, 새로운 어휘를 가르쳐주세요.",
-            "advanced": "\n추가 지시: 자연스럽고 복잡한 문장을 사용하고, 고급 표현을 가르쳐주세요.",
-        }
+        # 2. ❗️ [핵심 수정] 출력 형식을 매우 구체적으로 지시하는 'format_instructions'를 추가합니다.
+        # f-string을 사용하여 사용자의 난이도(difficulty)를 프롬프트에 동적으로 포함시킵니다.
+        format_instructions = f"""
 
-        return situation_prompt + difficulty_instructions.get(difficulty, "")
+You MUST strictly follow this response format every time:
+
+1.  **Conversational Reply:** [First, provide your natural, in-character conversational reply here.]
+2.  **Separator:** After the reply, add a blank line, then the separator line, then another blank line. The separator line should be: =======================
+3.  **Educational Content:** Below the separator, provide 1-2 useful phrases or vocabulary words from your reply. The explanations should be simple and suitable for a '{difficulty}' level learner.
+
+— EXAMPLE OUTPUT —
+Of course, I can help with that. Your gate is B52, located in the next concourse.
+
+=======================
+
+* **Concourse**: A large open area inside an airport terminal where people wait for their planes.
+* **Located in**: A common and simple way to say where something is.
+"""
+
+        # 3. 역할 프롬프트와 형식 프롬프트를 합쳐서 최종 지시문을 완성합니다.
+        return situation_prompt + format_instructions
 
     def _get_conversation_history(self, session_id: str) -> List[Dict[str, str]]:
         """세션별 대화 히스토리 조회"""

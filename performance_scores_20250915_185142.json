@@ -1,0 +1,110 @@
+{
+  "timestamp": "2025-09-15T18:51:42.194172",
+  "overall_score": 45.5,
+  "overall_status": "개선필요",
+  "feature_scores": {
+    "API 응답성": {
+      "score": 0.0,
+      "status": "개선필요",
+      "details": {
+        "avg_response_time_ms": 2994.89,
+        "endpoint_details": {
+          "/": 898.44,
+          "/health": 11072.91,
+          "/api/situations": 6.64,
+          "/api/languages": 1.55
+        },
+        "benchmark": {
+          "excellent": 50,
+          "good": 150,
+          "fair": 300,
+          "poor": 500
+        }
+      }
+    },
+    "동시 사용자 처리": {
+      "score": 100.0,
+      "status": "우수",
+      "details": {
+        "success_rates_by_users": {
+          "10": 100.0,
+          "50": 100.0,
+          "100": 100.0
+        },
+        "critical_success_rate": 100.0,
+        "benchmark": {
+          "excellent": 95,
+          "good": 85,
+          "fair": 70,
+          "poor": 50
+        }
+      }
+    },
+    "대화 플로우": {
+      "score": 0.0,
+      "status": "개선필요",
+      "details": {
+        "avg_flow_time_s": 25.89,
+        "min_time_s": 4.34,
+        "max_time_s": 52.28,
+        "benchmark": {
+          "excellent": 2.0,
+          "good": 4.0,
+          "fair": 7.0,
+          "poor": 10.0
+        }
+      }
+    },
+    "레벨 테스트": {
+      "score": 50.0,
+      "status": "보통",
+      "details": {
+        "avg_test_time_s": 8.0,
+        "questions_per_second": 0.38,
+        "benchmark": {
+          "excellent": 1.5,
+          "good": 3.0,
+          "fair": 5.0,
+          "poor": 8.0
+        }
+      }
+    },
+    "데이터베이스": {
+      "score": 23.1,
+      "status": "개선필요",
+      "details": {
+        "avg_query_time_ms": 1538.63,
+        "min_query_time_ms": 302.59,
+        "max_query_time_ms": 6309.86,
+        "benchmark": {
+          "excellent": 50,
+          "good": 200,
+          "fair": 500,
+          "poor": 1000
+        }
+      }
+    },
+    "시스템 리소스": {
+      "score": 100.0,
+      "status": "우수",
+      "details": {
+        "memory_usage_mb": 50.75,
+        "cpu_usage_percent": 15.3,
+        "memory_score": 100.0,
+        "cpu_score": 100.0,
+        "memory_benchmark": {
+          "excellent": 100,
+          "good": 250,
+          "fair": 500,
+          "poor": 1000
+        },
+        "cpu_benchmark": {
+          "excellent": 20,
+          "good": 50,
+          "fair": 70,
+          "poor": 90
+        }
+      }
+    }
+  }
+}
