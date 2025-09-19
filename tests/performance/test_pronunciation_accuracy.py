@@ -6,6 +6,8 @@
 import asyncio
 import os
 import sys
+from dotenv import load_dotenv
+load_dotenv()
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
