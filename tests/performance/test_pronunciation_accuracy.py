@@ -180,7 +180,7 @@ class PronunciationAccuracyTester:
             level_weight = self._get_level_weight(user_level)
             
             # 최종 정확도 점수 계산
-            final_accuracy = (correction_accuracy * level_weight) * (correction_needed / 100)
+            final_accuracy = correction_accuracy * level_weight
             
             return {
                 "session_id": session_id,
