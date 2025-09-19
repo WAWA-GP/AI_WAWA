@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -1662,7 +1662,7 @@ async def get_user_pronunciation_statistics(user_id: str):
         description="특정 세션의 음성 파일을 다운로드합니다.")
 async def download_pronunciation_audio(
     session_id: str,
-    audio_type: str = Query(..., description="음성 타입 (user_original 또는 corrected_pronunciation)")
+    audio_type: str = Path(..., description="음성 타입")
 ):
     """음성 파일 다운로드"""
     
