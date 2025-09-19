@@ -58,21 +58,29 @@ class ElevenLabsVoiceCloningService:
                 }
             
             # Base64 디코딩 및 임시 파일 저장
-            audio_data = base64.b64decode(voice_sample_base64)
+            try:
+                audio_data = base64.b64decode(voice_sample_base64)
+            except Exception as e:
+                return {"success": False, "error": f"Base64 디코딩 실패: {str(e)}"}
             
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
                 temp_file.write(audio_data)
+                temp_file.flush()
                 temp_file_path = temp_file.name
             
-            # ElevenLabs API 호출
-            voice_id = await self._create_voice_via_api(
-                user_id, 
-                temp_file_path, 
-                voice_name or f"PronunciationTutor_{user_id}"
-            )
-            
-            # 임시 파일 삭제
-            os.unlink(temp_file_path)
+            try:
+                # ElevenLabs API 호출
+                voice_id = await self._create_voice_via_api(
+                    user_id, 
+                    temp_file_path, 
+                    voice_name or f"PronunciationTutor_{user_id}"
+                )
+            finally:
+                # 임시 파일 삭제
+                try:
+                    os.unlink(temp_file_path)
+                except OSError:
+                    pass
             
             if voice_id:
                 # 캐시에 저장
@@ -110,36 +118,40 @@ class ElevenLabsVoiceCloningService:
         }
         
         # 파일과 데이터 준비
-        with open(audio_file_path, 'rb') as audio_file:
-            files = {
-                'files': (f'{user_id}_sample.wav', audio_file, 'audio/wav')
-            }
-            
-            data = {
-                'name': voice_name,
-                'description': f'Voice clone for pronunciation correction - User: {user_id}',
-                'labels': json.dumps({
-                    'user_id': user_id,
-                    'purpose': 'pronunciation_correction',
-                    'created': datetime.now().isoformat()
-                })
-            }
-            
-            try:
-                response = requests.post(url, headers=headers, files=files, data=data)
+        try:
+            with open(audio_file_path, 'rb') as audio_file:
+                files = {
+                    'files': (f'{user_id}_sample.wav', audio_file, 'audio/wav')
+                }
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    voice_id = result.get('voice_id')
-                    logger.info(f"Voice 생성 성공: {user_id} -> {voice_id}")
-                    return voice_id
-                else:
-                    logger.error(f"Voice 생성 실패: {response.status_code} - {response.text}")
-                    return None
+                data = {
+                    'name': voice_name,
+                    'description': f'Voice clone for pronunciation correction - User: {user_id}',
+                    'labels': json.dumps({
+                        'user_id': user_id,
+                        'purpose': 'pronunciation_correction',
+                        'created': datetime.now().isoformat()
+                    })
+                }
+                
+                try:
+                    response = requests.post(url, headers=headers, files=files, data=data)
                     
-            except Exception as e:
-                logger.error(f"API 호출 오류: {e}")
-                return None
+                    if response.status_code == 200:
+                        result = response.json()
+                        voice_id = result.get('voice_id')
+                        logger.info(f"Voice 생성 성공: {user_id} -> {voice_id}")
+                        return voice_id
+                    else:
+                        logger.error(f"Voice 생성 실패: {response.status_code} - {response.text}")
+                        return None
+                        
+                except Exception as e:
+                    logger.error(f"API 호출 오류: {e}")
+                    return None
+        except IOError as e:
+            logger.error(f"파일 읽기 오류: {e}")
+            return None
     
     async def generate_corrected_pronunciation(
         self,
@@ -325,8 +337,13 @@ class ElevenLabsVoiceCloningService:
         
         # 리셋 시간 확인
         if limit_info.get("reset_time"):
-            reset_time = datetime.fromisoformat(limit_info["reset_time"])
-            if current_time > reset_time:
+            try:
+                reset_time = datetime.fromisoformat(limit_info["reset_time"])
+                if current_time > reset_time:
+                    limit_info["current"] = 0
+                    limit_info["reset_time"] = None
+            except ValueError:
+                # 잘못된 날짜 형식인 경우 리셋
                 limit_info["current"] = 0
                 limit_info["reset_time"] = None
         
@@ -380,6 +397,46 @@ class ElevenLabsVoiceCloningService:
                 
         except Exception as e:
             return {"success": False, "error": str(e)}
+        
+    async def generate_corrected_pronunciation_with_storage(
+        self,
+        user_id: str,
+        target_text: str,
+        pronunciation_analysis: Dict,
+        language: str = "en",
+        session_id: str = None
+    ) -> Dict:
+        """사용자 음색으로 교정된 발음 생성 및 데이터 저장"""
+        
+        try:
+            # 기존 교정 음성 생성 로직
+            result = await self.generate_corrected_pronunciation(
+                user_id=user_id,
+                target_text=target_text,
+                pronunciation_analysis=pronunciation_analysis,
+                language=language
+            )
+            
+            # 성공시 데이터베이스 저장 정보 추가
+            if result["success"] and session_id:
+                result["session_id"] = session_id
+                result["data_storage_ready"] = True
+                
+                # 향후 데이터베이스 연동을 위한 메타데이터 추가
+                result["metadata"] = {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "target_text": target_text,
+                    "language": language,
+                    "pronunciation_scores": pronunciation_analysis,
+                    "generated_at": datetime.now().isoformat()
+                }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"교정 음성 생성 및 저장 오류: {e}")
+            return {"success": False, "error": str(e), "data_storage_ready": False}
 
 # 전역 인스턴스
 voice_cloning_service = ElevenLabsVoiceCloningService()

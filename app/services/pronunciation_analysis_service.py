@@ -11,6 +11,7 @@ import logging
 import base64
 from typing import Dict, List, Optional
 from datetime import datetime
+from .pronunciation_data_service import pronunciation_data_service
 import sys
 import os
 
@@ -113,31 +114,20 @@ class PronunciationAnalysisServiceWrapper:
     def __init__(self):
         """초기화"""
         self.core_service = PronunciationAnalysisService()
+        self.data_service = pronunciation_data_service
         self.is_initialized = False
-        logger.info("🎤 발음 분석 서비스 래퍼 초기화")
-
-    async def initialize(self):
-        """서비스 초기화"""
-        if self.is_initialized:
-            return True
-
-        try:
-            await self.core_service.initialize_pronunciation_data()
-            self.is_initialized = True
-            logger.info("✅ 발음 분석 서비스 초기화 완료")
-            return True
-        except Exception as e:
-            logger.error(f"❌ 발음 분석 서비스 초기화 실패: {e}")
-            return False
+        logger.info("🎤 발음 분석 서비스 래퍼 초기화 (데이터 저장 포함)")
 
     async def analyze_pronunciation_from_base64(
         self, 
         audio_base64: str, 
         target_text: str, 
         user_level: str = "B1",
-        language: str = "en"  # 언어 파라미터 추가
+        language: str = "en",
+        user_id: str = None,  # 추가
+        session_id: str = None  # 추가
     ) -> PronunciationScore:
-        """Base64 오디오에서 발음 분석 - 다국어 지원"""
+        """Base64 오디오에서 발음 분석 - 다국어 지원 및 데이터 저장"""
         
         if not self.is_initialized:
             await self.initialize()
@@ -148,13 +138,156 @@ class PronunciationAnalysisServiceWrapper:
             language = "en"
         
         try:
-            # Base64 디코딩 (실제로는 core_service를 통해 처리)
-            return await self.core_service.analyze_pronunciation_from_base64(
-                audio_base64, target_text, user_level, language  # language 파라미터 전달
+            # 1. 발음 분석 수행
+            result = await self.core_service.analyze_pronunciation_from_base64(
+                audio_base64, target_text, user_level, language
             )
+            
+            # 2. 데이터 저장 (user_id와 session_id가 제공된 경우)
+            if user_id and session_id and self.data_service.supabase:
+                await self._save_pronunciation_data(
+                    user_id=user_id,
+                    session_id=session_id,
+                    target_text=target_text,
+                    language=language,
+                    user_level=user_level,
+                    user_audio_base64=audio_base64,
+                    analysis_result=result
+                )
+            
+            return result
+            
         except Exception as e:
             logger.error(f"❌ 발음 분석 오류 ({language}): {e}")
             return self._create_fallback_score(language)
+
+    async def _save_pronunciation_data(
+        self,
+        user_id: str,
+        session_id: str,
+        target_text: str,
+        language: str,
+        user_level: str,
+        user_audio_base64: str,
+        analysis_result: PronunciationScore
+    ):
+        """발음 분석 데이터를 데이터베이스에 저장"""
+        
+        try:
+            # 1. 발음 세션 생성
+            pronunciation_session_id = await self.data_service.create_pronunciation_session(
+                user_id=user_id,
+                session_id=session_id,
+                target_text=target_text,
+                language=language,
+                user_level=user_level
+            )
+            
+            if not pronunciation_session_id:
+                logger.error("발음 세션 생성 실패")
+                return
+            
+            # 2. 사용자 원본 음성 저장
+            user_audio_saved = await self.data_service.save_user_audio(
+                pronunciation_session_id=pronunciation_session_id,
+                user_audio_base64=user_audio_base64
+            )
+            
+            # 3. 분석 결과 저장
+            analysis_data = {
+                'overall_score': analysis_result.overall_score,
+                'pitch_score': analysis_result.pitch_score,
+                'rhythm_score': analysis_result.rhythm_score,
+                'stress_score': analysis_result.stress_score,
+                'fluency_score': analysis_result.fluency_score,
+                'phoneme_scores': analysis_result.phoneme_scores,
+                'detailed_feedback': analysis_result.detailed_feedback,
+                'suggestions': analysis_result.suggestions,
+                'confidence': analysis_result.confidence
+            }
+            
+            analysis_saved = await self.data_service.save_analysis_result(
+                pronunciation_session_id=pronunciation_session_id,
+                analysis_result=analysis_data
+            )
+            
+            if user_audio_saved and analysis_saved:
+                logger.info(f"✅ 발음 데이터 저장 완료: {session_id}")
+            else:
+                logger.warning(f"⚠️ 발음 데이터 부분 저장: 음성={user_audio_saved}, 분석={analysis_saved}")
+            
+        except Exception as e:
+            logger.error(f"발음 데이터 저장 오류: {e}")
+
+    async def generate_and_save_corrected_pronunciation(
+        self,
+        user_id: str,
+        session_id: str,
+        target_text: str,
+        user_audio_base64: str,
+        user_level: str = "B1",
+        language: str = "en"
+    ) -> Dict:
+        """발음 분석 + 교정 음성 생성 + 데이터 저장 통합 기능"""
+        
+        try:
+            # 1. 발음 분석
+            analysis_result = await self.analyze_pronunciation_from_base64(
+                audio_base64=user_audio_base64,
+                target_text=target_text,
+                user_level=user_level,
+                language=language,
+                user_id=user_id,
+                session_id=session_id
+            )
+            
+            # 2. 교정된 음성 생성 (voice cloning service 사용)
+            from .voice_cloning_service import voice_cloning_service
+            
+            analysis_dict = {
+                "overall_score": analysis_result.overall_score,
+                "pitch_score": analysis_result.pitch_score,
+                "rhythm_score": analysis_result.rhythm_score,
+                "stress_score": analysis_result.stress_score,
+                "fluency_score": analysis_result.fluency_score
+            }
+            
+            correction_result = await voice_cloning_service.generate_corrected_pronunciation(
+                user_id=user_id,
+                target_text=target_text,
+                pronunciation_analysis=analysis_dict,
+                language=language
+            )
+            
+            # 3. 교정된 음성도 데이터베이스에 저장
+            if correction_result.get("success") and self.data_service.supabase:
+                # 세션 ID로 pronunciation_session_id 조회
+                session_details = await self.data_service.get_pronunciation_session_details(session_id)
+                
+                if session_details:
+                    pronunciation_session_id = session_details['id']
+                    
+                    await self.data_service.save_corrected_audio(
+                        pronunciation_session_id=pronunciation_session_id,
+                        corrected_audio_base64=correction_result["corrected_audio_base64"]
+                    )
+                    
+                    logger.info(f"🔧 교정 음성 저장 완료: {session_id}")
+            
+            return {
+                "success": True,
+                "analysis_result": analysis_result,
+                "corrected_audio": correction_result,
+                "data_saved": True
+            }
+            
+        except Exception as e:
+            logger.error(f"통합 발음 처리 오류: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "data_saved": False
+            }
 
     async def compare_pronunciations(
         self, user_audio_base64: str, reference_word: str, user_level: str = "B1"

@@ -16,6 +16,7 @@ import logging
 import uvicorn
 from datetime import datetime, timedelta
 from supabase import create_client
+from services.pronunciation_data_service import pronunciation_data_service
 
 url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
@@ -223,6 +224,9 @@ class PronunciationAnalysisRequest(BaseModel):
     target_text: str = Field(..., description="발음할 대상 텍스트")
     user_level: str = Field("B1", description="사용자 레벨 (A1-C2)")
     language: str = Field("en", description="언어 코드")
+    user_id: Optional[str] = Field(None, description="사용자 ID (데이터 저장용)")
+    session_id: Optional[str] = Field(None, description="세션 ID (데이터 저장용)")
+    save_to_database: bool = Field(False, description="데이터베이스 저장 여부")
     
     class Config:
         json_schema_extra = {
@@ -233,6 +237,15 @@ class PronunciationAnalysisRequest(BaseModel):
                 "language": "en"
             }
         }
+
+# 교정된 발음 생성 요청 모델
+class PronunciationCorrectionRequest(BaseModel):
+    user_id: str = Field(..., description="사용자 고유 ID")
+    target_text: str = Field(..., description="교정할 대상 텍스트")
+    user_audio_base64: str = Field(..., description="사용자 발음 오디오 (Base64)")
+    user_level: str = Field("B1", description="사용자 레벨 (A1-C2)")
+    language: str = Field("en", description="언어 코드")
+    session_id: Optional[str] = Field(None, description="세션 ID")
 
 class PronunciationComparisonRequest(BaseModel):
     audio_base64: str = Field(..., description="Base64 인코딩된 오디오 데이터")
@@ -1425,14 +1438,14 @@ async def test_fine_tuned_model(
 # === 발음 분석 API ===
 
 @app.post("/api/pronunciation/analyze", tags=["Pronunciation"],
-         summary="음성 억양 분석",
-         description="사용자의 음성을 분석하여 발음, 억양, 리듬 등을 평가합니다.",
+         summary="음성 억양 분석 (데이터 저장 포함)",
+         description="사용자의 음성을 분석하여 발음, 억양, 리듬 등을 평가하고 선택적으로 데이터베이스에 저장합니다.",
          response_model=PronunciationResponse)
-async def analyze_pronunciation(request: PronunciationAnalysisRequest):
-    """음성 억양 분석"""
+async def analyze_pronunciation_with_storage(request: PronunciationAnalysisRequest):
+    """음성 억양 분석 (데이터 저장 기능 포함)"""
     
     try:
-        logger.info(f"억양 분석 요청: {len(request.target_text)} 글자, 레벨: {request.user_level}")
+        logger.info(f"억양 분석 요청: {len(request.target_text)} 글자, 레벨: {request.user_level}, 저장: {request.save_to_database}")
         
         # 입력 검증
         if not request.audio_base64:
@@ -1441,18 +1454,34 @@ async def analyze_pronunciation(request: PronunciationAnalysisRequest):
         if not request.target_text:
             raise HTTPException(status_code=400, detail="대상 텍스트가 없습니다.")
         
-        # 억양 분석 수행
-        result = await pronunciation_service.analyze_pronunciation_from_base64(
-            audio_base64=request.audio_base64,
-            target_text=request.target_text,
-            user_level=request.user_level
-        )
+        # 데이터 저장이 요청되었지만 필수 정보가 없는 경우
+        if request.save_to_database and (not request.user_id or not request.session_id):
+            raise HTTPException(status_code=400, detail="데이터 저장을 위해서는 user_id와 session_id가 필요합니다.")
+        
+        # 억양 분석 수행 (데이터 저장 포함 여부에 따라)
+        if request.save_to_database:
+            result = await pronunciation_service.analyze_pronunciation_from_base64(
+                audio_base64=request.audio_base64,
+                target_text=request.target_text,
+                user_level=request.user_level,
+                language=request.language,
+                user_id=request.user_id,
+                session_id=request.session_id
+            )
+        else:
+            result = await pronunciation_service.analyze_pronunciation_from_base64(
+                audio_base64=request.audio_base64,
+                target_text=request.target_text,
+                user_level=request.user_level,
+                language=request.language
+            )
         
         # 응답 데이터 구성
         response_data = {
             "analysis_id": f"pronunciation_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "target_text": request.target_text,
             "user_level": request.user_level,
+            "language": request.language,
             "scores": {
                 "overall": result.overall_score,
                 "pitch": result.pitch_score,
@@ -1467,10 +1496,12 @@ async def analyze_pronunciation(request: PronunciationAnalysisRequest):
                 "phoneme_scores": result.phoneme_scores
             },
             "improvement_priority": _get_improvement_priority(result),
-            "analyzed_at": datetime.now().isoformat()
+            "analyzed_at": datetime.now().isoformat(),
+            "data_saved": request.save_to_database,
+            "session_id": request.session_id if request.save_to_database else None
         }
         
-        logger.info(f"억양 분석 완료: 전체 점수 {result.overall_score:.1f}")
+        logger.info(f"억양 분석 완료: 전체 점수 {result.overall_score:.1f}, 데이터 저장: {request.save_to_database}")
         
         return PronunciationResponse(
             success=True,
@@ -1486,6 +1517,187 @@ async def analyze_pronunciation(request: PronunciationAnalysisRequest):
         logger.error(f"상세 오류: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"억양 분석 중 오류가 발생했습니다: {str(e)}")
 
+# 통합 발음 교정 API (분석 + 교정 음성 생성 + 데이터 저장)
+@app.post("/api/pronunciation/correct-with-voice", tags=["Pronunciation"],
+         summary="발음 분석 및 개인화된 교정 음성 생성",
+         description="사용자 음성을 분석하고, 사용자의 목소리로 교정된 발음을 생성하여 모든 데이터를 저장합니다.")
+async def generate_corrected_pronunciation_with_storage(request: PronunciationCorrectionRequest):
+    """발음 분석 + 교정 음성 생성 + 데이터 저장 통합 API"""
+    
+    try:
+        logger.info(f"통합 발음 교정 요청: {request.user_id} - {request.target_text[:30]}...")
+        
+        # 세션 ID 생성 (제공되지 않은 경우)
+        if not request.session_id:
+            request.session_id = f"pronunciation_{request.user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # 통합 처리 실행
+        result = await pronunciation_service.generate_and_save_corrected_pronunciation(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            target_text=request.target_text,
+            user_audio_base64=request.user_audio_base64,
+            user_level=request.user_level,
+            language=request.language
+        )
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "message": "발음 분석 및 교정이 완료되었습니다.",
+                "data": {
+                    "session_id": request.session_id,
+                    "original_analysis": {
+                        "overall_score": result["analysis_result"].overall_score,
+                        "pitch_score": result["analysis_result"].pitch_score,
+                        "rhythm_score": result["analysis_result"].rhythm_score,
+                        "stress_score": result["analysis_result"].stress_score,
+                        "fluency_score": result["analysis_result"].fluency_score,
+                        "detailed_feedback": result["analysis_result"].detailed_feedback,
+                        "suggestions": result["analysis_result"].suggestions
+                    },
+                    "corrected_audio_base64": result["corrected_audio"].get("corrected_audio_base64"),
+                    "corrections_applied": result["corrected_audio"].get("corrections_applied", []),
+                    "data_saved": result["data_saved"],
+                    "processed_at": datetime.now().isoformat()
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "발음 교정 처리 중 오류가 발생했습니다."),
+                "data_saved": result.get("data_saved", False)
+            }
+            
+    except Exception as e:
+        logger.error(f"통합 발음 교정 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 사용자 발음 기록 조회 API
+@app.get("/api/pronunciation/history/{user_id}", tags=["Pronunciation"],
+        summary="사용자 발음 연습 기록 조회",
+        description="특정 사용자의 발음 연습 기록을 조회합니다.")
+async def get_user_pronunciation_history(
+    user_id: str,
+    limit: int = Query(50, description="조회할 기록 수"),
+    language: Optional[str] = Query(None, description="언어 필터")
+):
+    """사용자 발음 연습 기록 조회"""
+    
+    try:
+        history = await pronunciation_data_service.get_user_pronunciation_history(
+            user_id=user_id,
+            limit=limit
+        )
+        
+        # 언어 필터 적용
+        if language:
+            history = [h for h in history if h.get('language') == language]
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "total_records": len(history),
+            "history": history,
+            "retrieved_at": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"사용자 기록 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 특정 세션 상세 정보 조회 API
+@app.get("/api/pronunciation/session/{session_id}", tags=["Pronunciation"],
+        summary="발음 세션 상세 정보 조회",
+        description="특정 발음 세션의 상세 정보와 음성 파일들을 조회합니다.")
+async def get_pronunciation_session_details(session_id: str):
+    """발음 세션 상세 정보 조회"""
+    
+    try:
+        session_details = await pronunciation_data_service.get_pronunciation_session_details(session_id)
+        
+        if not session_details:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+        
+        # 음성 파일들 조회
+        audio_files = await pronunciation_data_service.get_audio_files(session_details['id'])
+        
+        return {
+            "success": True,
+            "session_details": session_details,
+            "audio_files": audio_files,
+            "retrieved_at": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"세션 상세 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 사용자 발음 통계 API
+@app.get("/api/pronunciation/statistics/{user_id}", tags=["Pronunciation"],
+        summary="사용자 발음 연습 통계",
+        description="사용자의 발음 연습 통계 정보를 제공합니다.")
+async def get_user_pronunciation_statistics(user_id: str):
+    """사용자 발음 연습 통계"""
+    
+    try:
+        statistics = await pronunciation_data_service.get_user_statistics(user_id)
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "statistics": statistics,
+            "generated_at": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"통계 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 음성 파일 다운로드 API
+@app.get("/api/pronunciation/download-audio/{session_id}/{audio_type}", tags=["Pronunciation"],
+        summary="음성 파일 다운로드",
+        description="특정 세션의 음성 파일을 다운로드합니다.")
+async def download_pronunciation_audio(
+    session_id: str,
+    audio_type: str = Query(..., description="음성 타입 (user_original 또는 corrected_pronunciation)")
+):
+    """음성 파일 다운로드"""
+    
+    try:
+        if audio_type not in ["user_original", "corrected_pronunciation"]:
+            raise HTTPException(status_code=400, detail="올바르지 않은 음성 타입입니다.")
+        
+        # 세션 상세 정보 조회
+        session_details = await pronunciation_data_service.get_pronunciation_session_details(session_id)
+        
+        if not session_details:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+        
+        # 음성 파일 조회
+        audio_files = await pronunciation_data_service.get_audio_files(session_details['id'])
+        
+        if audio_type not in audio_files:
+            raise HTTPException(status_code=404, detail="요청한 음성 파일을 찾을 수 없습니다.")
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "audio_type": audio_type,
+            "audio_base64": audio_files[audio_type],
+            "target_text": session_details.get('target_text', ''),
+            "language": session_details.get('language', 'en'),
+            "downloaded_at": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"음성 다운로드 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.post("/api/pronunciation/compare", tags=["Pronunciation"],
          summary="발음 비교 분석",
          description="사용자 발음과 표준 발음을 비교 분석합니다.",
@@ -1568,26 +1780,157 @@ async def get_available_situations():
         raise HTTPException(status_code=500, detail=f"상황 목록 조회 중 오류: {str(e)}")
 
 @app.get("/api/languages", tags=["Info"],
-        summary="지원하는 언어 목록",
+        summary="지원하는 언어 목록 (5개 언어)",
         description="시스템에서 지원하는 모든 언어 목록을 조회합니다.")
 async def get_supported_languages():
-    """지원하는 언어 목록"""
+    """지원하는 언어 목록 - 5개 언어"""
     
     try:
         stt_languages = stt_service.get_supported_languages()
         tts_languages = tts_service.get_supported_languages()
         
+        # 5개 언어 통합 정보
+        language_support = {
+            "ko": {
+                "name": "한국어",
+                "native_name": "한국어",
+                "stt_supported": "ko-KR" in stt_languages.values(),
+                "tts_supported": "ko" in tts_languages.values(),
+                "conversation_supported": True,
+                "pronunciation_supported": True,
+                "level_test_supported": True
+            },
+            "en": {
+                "name": "English",
+                "native_name": "English",
+                "stt_supported": "en-US" in stt_languages.values(),
+                "tts_supported": "en" in tts_languages.values(),
+                "conversation_supported": True,
+                "pronunciation_supported": True,
+                "level_test_supported": True
+            },
+            "ja": {
+                "name": "Japanese",
+                "native_name": "日本語",
+                "stt_supported": "ja-JP" in stt_languages.values(),
+                "tts_supported": "ja" in tts_languages.values(),
+                "conversation_supported": True,
+                "pronunciation_supported": True,
+                "level_test_supported": True
+            },
+            "zh": {
+                "name": "Chinese",
+                "native_name": "中文",
+                "stt_supported": "zh-CN" in stt_languages.values(),
+                "tts_supported": "zh" in tts_languages.values(),
+                "conversation_supported": True,
+                "pronunciation_supported": True,
+                "level_test_supported": True
+            },
+            "fr": {
+                "name": "French",
+                "native_name": "Français",
+                "stt_supported": "fr-FR" in stt_languages.values(),
+                "tts_supported": "fr" in tts_languages.values(),
+                "conversation_supported": True,
+                "pronunciation_supported": True,
+                "level_test_supported": True
+            }
+        }
+        
         return {
             "success": True,
-            "stt_languages": stt_languages,
-            "tts_languages": tts_languages,
-            "common_languages": ["korean", "english", "japanese", "chinese"]
+            "supported_languages": language_support,
+            "total_languages": len(language_support),
+            "fully_supported": ["ko", "en", "ja", "zh", "fr"],
+            "default_language": "ko",
+            "features_by_language": {
+                lang: {
+                    "conversation": info["conversation_supported"],
+                    "speech_recognition": info["stt_supported"],
+                    "text_to_speech": info["tts_supported"],
+                    "pronunciation_analysis": info["pronunciation_supported"],
+                    "level_testing": info["level_test_supported"]
+                }
+                for lang, info in language_support.items()
+            }
         }
         
     except Exception as e:
         logger.error(f"언어 목록 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"언어 목록 조회 중 오류: {str(e)}")
 
+# 언어별 시나리오 정보 API
+@app.get("/api/scenarios/{language}", tags=["Info"],
+        summary="언어별 시나리오 정보",
+        description="특정 언어의 사용 가능한 시나리오 정보를 조회합니다.")
+async def get_language_scenarios(language: str):
+    """언어별 시나리오 정보"""
+    
+    if language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 언어: {language}. 지원 언어: {SUPPORTED_LANGUAGES}"
+        )
+    
+    try:
+        scenarios_info = {
+            "language": language,
+            "language_name": LANGUAGE_NAMES.get(language),
+            "available_situations": ["airport", "restaurant", "hotel", "street"],
+            "situation_details": {
+                "airport": {
+                    "title": {
+                        "ko": "공항 체크인",
+                        "en": "Airport Check-in",
+                        "ja": "空港でのチェックイン", 
+                        "zh": "机场值机",
+                        "fr": "Enregistrement à l'aéroport"
+                    }.get(language),
+                    "description": "공항에서의 체크인 및 탑승 절차 연습"
+                },
+                "restaurant": {
+                    "title": {
+                        "ko": "레스토랑 주문",
+                        "en": "Restaurant Ordering",
+                        "ja": "レストランでの注文",
+                        "zh": "餐厅点餐", 
+                        "fr": "Commande au restaurant"
+                    }.get(language),
+                    "description": "레스토랑에서 주문하기 연습"
+                },
+                "hotel": {
+                    "title": {
+                        "ko": "호텔 체크인",
+                        "en": "Hotel Check-in",
+                        "ja": "ホテルでのチェックイン",
+                        "zh": "酒店入住",
+                        "fr": "Enregistrement à l'hôtel"
+                    }.get(language),
+                    "description": "호텔 체크인 및 서비스 이용 연습"
+                },
+                "street": {
+                    "title": {
+                        "ko": "길 찾기",
+                        "en": "Asking for Directions", 
+                        "ja": "道案内",
+                        "zh": "问路",
+                        "fr": "Demander son chemin"
+                    }.get(language),
+                    "description": "길 찾기 및 일상 대화 연습"
+                }
+            }
+        }
+        
+        return {
+            "success": True,
+            "data": scenarios_info
+        }
+        
+    except Exception as e:
+        logger.error(f"언어별 시나리오 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/api/openai/status", tags=["System"],
         summary="OpenAI 서비스 상태",
         description="OpenAI GPT-4 서비스의 연결 상태를 확인합니다.")
