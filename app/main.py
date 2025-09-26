@@ -38,7 +38,7 @@ try:
     from app.services.voice_cloning_service import voice_cloning_service
     from app.services.conversation_data_collector import data_collector
     from app.services.fine_tuning_manager import fine_tuning_manager
-except ImportError:
+except ImportError as e:
     print("⚠️ 서비스 모듈을 찾을 수 없습니다. 경로를 확인해주세요.")
     import sys
     sys.exit(1)
