@@ -16,7 +16,8 @@ import logging
 import uvicorn
 from datetime import datetime, timedelta
 from supabase import create_client
-from services.pronunciation_data_service import pronunciation_data_service
+from app.services.pronunciation_data_service import pronunciation_data_service
+from app.services.pronunciation_analysis_service import pronunciation_service
 
 url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
@@ -29,14 +30,14 @@ else:
 
 # 서비스 임포트
 try:
-    from services.conversation_ai_service import conversation_ai_service
-    from services.speech_recognition_service import stt_service
-    from services.text_to_speech_service import tts_service
-    from services.openai_service import openai_service
-    from services.level_test_service import level_test_service
-    from services.voice_cloning_service import voice_cloning_service
-    from services.conversation_data_collector import data_collector
-    from services.fine_tuning_manager import fine_tuning_manager
+    from app.services.conversation_ai_service import conversation_ai_service
+    from app.services.speech_recognition_service import stt_service
+    from app.services.text_to_speech_service import tts_service
+    from app.services.openai_service import openai_service
+    from app.services.level_test_service import level_test_service
+    from app.services.voice_cloning_service import voice_cloning_service
+    from app.services.conversation_data_collector import data_collector
+    from app.services.fine_tuning_manager import fine_tuning_manager
 except ImportError:
     print("⚠️ 서비스 모듈을 찾을 수 없습니다. 경로를 확인해주세요.")
     import sys
