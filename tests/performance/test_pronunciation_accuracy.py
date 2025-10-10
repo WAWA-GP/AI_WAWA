@@ -6,6 +6,8 @@
 import asyncio
 import os
 import sys
+from dotenv import load_dotenv
+load_dotenv()
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -182,7 +184,7 @@ class PronunciationAccuracyTester:
             level_weight = self._get_level_weight(user_level)
             
             # 최종 정확도 점수 계산
-            final_accuracy = (correction_accuracy * level_weight) * (correction_needed / 100)
+            final_accuracy = correction_accuracy * level_weight
             
             return {
                 "session_id": session_id,

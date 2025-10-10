@@ -10,45 +10,38 @@ from datetime import datetime
 import logging
 
 # OpenAI 서비스 임포트
-try:
-    from .openai_service import openai_service
-except ImportError:
-    openai_service = None
-    logging.warning("OpenAI 서비스를 가져올 수 없습니다. 기본 시나리오만 사용됩니다.")
+from app.services.openai_service import openai_service
 
 # 데이터 수집기 임포트
-try:
-    from .conversation_data_collector import data_collector
-except ImportError:
-    data_collector = None
-    logging.warning("데이터 수집기를 가져올 수 없습니다. 데이터 수집이 비활성화됩니다.")
+from app.services.conversation_data_collector import data_collector
+
 
 logger = logging.getLogger(__name__)
 
 class EnhancedConversationService:
     """OpenAI GPT-4와 시나리오를 통합한 향상된 대화 서비스 (데이터 수집 포함)"""
-    
+
     def __init__(self):
         # 데이터 수집기 초기화
         self.data_collector = data_collector
         self.response_start_times = {}  # 응답 시간 측정용
-        
+
         # 기존 시스템 초기화
         self.conversation_scenarios = {}
         self.current_scenarios = {}  # session_id별 현재 시나리오
         self.openai_sessions = {}   # OpenAI 전용 세션들
         self.load_collected_data()
-        
+
         # 대화 모드
         self.SCENARIO_MODE = "scenario"    # 기존 시나리오 기반
         self.OPENAI_MODE = "openai"       # OpenAI GPT-4 기반
         self.HYBRID_MODE = "hybrid"       # 혼합 모드
-        
+
         logger.info("대화 서비스 초기화 완료 (데이터 수집 포함)")
-        
+
     def load_collected_data(self):
         """수집된 대화 데이터를 시나리오로 변환"""
-        
+
         try:
             # 수집한 JSON 파일 읽기 (여러 경로 시도)
             json_filename = 'free_travel_conversations_en_20250722_161841.json'
@@ -57,7 +50,7 @@ class EnhancedConversationService:
                 f'../{json_filename}',  # 상위 폴더
                 f'../../{json_filename}',  # 2단계 상위 폴더
             ]
-            
+
             data = None
             for json_path in possible_paths:
                 try:
@@ -67,14 +60,14 @@ class EnhancedConversationService:
                         break
                 except FileNotFoundError:
                     continue
-            
+
             if data is None:
                 logger.warning(f"수집된 대화 파일을 찾을 수 없음. 기본 시나리오만 사용")
                 self._add_default_scenarios()
                 return
-            
+
             logger.info(f"JSON 파일 구조: {list(data.keys())}")
-            
+
             # JSON 구조 확인 및 대화 데이터 추출
             conversations = []
             if 'conversations' in data:
@@ -87,9 +80,9 @@ class EnhancedConversationService:
                     if isinstance(data[key], list):
                         conversations = data[key]
                         break
-            
+
             logger.info(f"추출된 대화 수: {len(conversations)}")
-            
+
             # 상황별로 대화 시나리오 분류
             for i, conversation in enumerate(conversations):
                 try:
@@ -99,69 +92,70 @@ class EnhancedConversationService:
                         if key in conversation:
                             situation = conversation[key].lower()
                             break
-                    
+
                     if not situation:
                         # 대화 내용에서 상황 추정
                         dialogue_text = str(conversation.get('dialogue', ''))
                         situation = self._infer_situation_from_text(dialogue_text)
-                    
+
                     if situation not in self.conversation_scenarios:
                         self.conversation_scenarios[situation] = {
                             'dialogues': [],
                             'common_phrases': [],
                             'scenarios': []
                         }
-                    
+
                     # 실제 대화를 시나리오로 변환
                     dialogue_text = conversation.get('dialogue', '') or conversation.get('text', '') or str(conversation)
                     scenario = self._extract_scenario_from_dialogue(dialogue_text, situation)
-                    
+
                     if scenario:
                         self.conversation_scenarios[situation]['scenarios'].append(scenario)
                         logger.debug(f"시나리오 추가: {situation} - {len(scenario.get('key_phrases', []))}개 핵심 표현")
-                    
+
                 except Exception as e:
                     logger.warning(f"대화 {i} 처리 중 오류: {e}")
                     continue
-            
+
             # 기본 시나리오 추가 (데이터 없을 때 대비)
             self._add_default_scenarios()
-            
+
             # 결과 로깅
             for situation, data in self.conversation_scenarios.items():
                 scenario_count = len(data['scenarios'])
                 logger.info(f"✅ {situation}: {scenario_count}개 시나리오 로드됨")
-            
+
         except FileNotFoundError:
             logger.warning("수집된 대화 파일을 찾을 수 없음. 기본 시나리오만 사용")
             self._add_default_scenarios()
         except Exception as e:
             logger.error(f"데이터 로드 오류: {e}")
             self._add_default_scenarios()
-    
+
     async def start_conversation(
-        self,
-        session_id: str,
-        situation: str,
-        difficulty: str = "beginner",
-        language: str = "en",
-        mode: str = "auto",
-        user_id: str = None  # 데이터 수집을 위한 user_id 추가
+            self,
+            session_id: str,
+            situation: str,
+            difficulty: str = "beginner",
+            language: str = "en",
+            mode: str = "auto",
+            user_id: str = None,  # 데이터 수집을 위한 user_id 추가
+            translate: bool = False
     ) -> Dict[str, Any]:
         """새로운 대화 세션 시작 (데이터 수집 포함)"""
-        
+
         if situation not in self.conversation_scenarios:
             return {
                 "success": False,
                 "error": f"지원하지 않는 상황: {situation}"
             }
-        
+
         try:
             # 모드 자동 선택
             if mode == "auto":
                 # OpenAI 사용 가능하면 hybrid, 아니면 scenario
                 mode = "hybrid" if openai_service and openai_service.client else "scenario"
-            
+
             # 세션 설정
             session_config = {
                 'situation': situation,
@@ -170,9 +164,10 @@ class EnhancedConversationService:
                 'mode': mode,
                 'user_id': user_id,
                 'started_at': datetime.now().isoformat(),
-                'turn_count': 0
+                'turn_count': 0,
+                'translate': translate
             }
-            
+
             # 데이터 수집: 세션 시작 기록
             if user_id and self.data_collector:
                 await self.data_collector.start_session(
@@ -183,125 +178,115 @@ class EnhancedConversationService:
                     mode=mode
                 )
                 logger.debug(f"데이터 수집 세션 시작: {session_id}")
-            
-            if mode == "openai" and openai_service:
-                # OpenAI 전용 모드
-                self.openai_sessions[session_id] = session_config
-                
-                # GPT-4로 시작 메시지 생성
-                intro_message = await openai_service.generate_scenario_intro(
+
+                if (mode == "openai" or mode == "hybrid") and openai_service:
+                    self.openai_sessions[session_id] = session_config
+
+                # 1. 번역 요청 여부에 따라 translate_to 언어 코드 설정
+                translate_to = 'ko' if translate else None
+
+                # 2. openai_service를 호출하여 원문과 번역문을 함께 받음
+                intro_result = await openai_service.generate_scenario_intro(
                     situation=situation,
                     language=language,
-                    difficulty=difficulty
+                    difficulty=difficulty,
+                    translate_to=translate_to
                 )
-                
+
+                # 3. Flutter 앱이 기대하는 {"success": ..., "data": {...}} 구조로 응답 반환
                 return {
                     "success": True,
-                    "mode": mode,
-                    "session_id": session_id,
-                    "first_message": intro_message,
-                    "scenario_title": f"AI-Powered {situation.title()} Conversation",
-                    "features": ["intelligent_responses", "contextual_feedback", "adaptive_difficulty"],
-                    "data_collection": bool(user_id and self.data_collector)
+                    "data": {
+                        "session_id": session_id,
+                        "ai_message": intro_result['original'],
+                        "translated_text": intro_result['translated'],
+                        "mode": mode,
+                        "scenario_title": f"AI-Powered {situation.title()} Conversation",
+                        "features": ["intelligent_responses", "contextual_feedback"],
+                        "data_collection": bool(user_id and self.data_collector)
+                    }
                 }
-                
-            elif mode == "hybrid" and openai_service:
-                # 하이브리드 모드: OpenAI + 시나리오 데이터 활용
-                self.openai_sessions[session_id] = session_config
-                
-                # 시나리오 데이터에서 상황별 컨텍스트 추출
-                scenario_context = self._get_scenario_context(situation)
-                
-                # GPT-4로 컨텍스트를 반영한 시작 메시지 생성
-                intro_message = await openai_service.generate_scenario_intro(
-                    situation=situation,
-                    language=language,
-                    difficulty=difficulty
-                )
-                
-                return {
-                    "success": True,
-                    "mode": mode,
-                    "session_id": session_id,
-                    "first_message": intro_message,
-                    "scenario_title": f"Enhanced {situation.title()} Conversation",
-                    "scenario_context": scenario_context,
-                    "features": ["intelligent_responses", "scenario_based", "contextual_feedback"],
-                    "data_collection": bool(user_id and self.data_collector)
-                }
-                
+
             else:
-                # 시나리오 모드 (기본)
-                return await self._start_scenario_mode(session_id, situation, difficulty, language)
-                
+                scenario_result = await self._start_scenario_mode(session_id, situation, difficulty, language)
+                if scenario_result.get("success"):
+                    return {
+                        "success": True,
+                        "data": scenario_result # _start_scenario_mode가 반환하는 내용을 그대로 data에 담음
+                    }
+                else:
+                    return scenario_result # 실패 시에는 그대로 반환
+
         except Exception as e:
             logger.error(f"대화 시작 오류: {e}")
             return {
                 "success": False,
                 "error": f"대화 시작 중 오류: {str(e)}"
             }
-    
+
     async def process_user_response(
-        self,
-        session_id: str,
-        user_message: str
+            self,
+            session_id: str,
+            user_message: str,
+            translate: bool = False # 👈 [FIX] Add 'translate' parameter here
     ) -> Dict[str, Any]:
         """사용자 메시지 처리 (데이터 수집 포함)"""
-        
+
         # 응답 시간 측정 시작
         start_time = time.time()
         self.response_start_times[session_id] = start_time
-        
+
         try:
             # OpenAI 세션인지 확인
             if session_id in self.openai_sessions:
-                result = await self._process_openai_message(session_id, user_message)
-            
+                # 👈 [FIX] Pass the 'translate' flag down to the next function
+                result = await self._process_openai_message(session_id, user_message, translate=translate)
+
             # 시나리오 세션인지 확인
             elif session_id in self.current_scenarios:
                 result = await self._process_scenario_message(session_id, user_message)
-            
+
             else:
                 return {
                     "success": False,
                     "error": "활성 세션이 없습니다. 먼저 대화를 시작해주세요."
                 }
-            
+
             # 데이터 수집
             if result["success"] and self.data_collector:
                 await self._log_conversation_data(session_id, user_message, result, start_time)
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"메시지 처리 오류: {e}")
             return {
                 "success": False,
                 "error": f"메시지 처리 중 오류: {str(e)}"
             }
-    
+
     async def _log_conversation_data(
-        self, 
-        session_id: str, 
-        user_message: str, 
-        ai_result: Dict, 
-        start_time: float
+            self,
+            session_id: str,
+            user_message: str,
+            ai_result: Dict,
+            start_time: float
     ):
         """대화 데이터 로깅"""
-        
+
         try:
             # 세션 정보 가져오기
             session_config = self.openai_sessions.get(session_id) or self.current_scenarios.get(session_id)
             if not session_config:
                 return
-            
+
             # 응답 시간 계산
             response_time_ms = (time.time() - start_time) * 1000
-            
+
             # 턴 인덱스 계산
             turn_index = session_config.get('turn_count', 0)
             session_config['turn_count'] = turn_index + 1
-            
+
             # 컨텍스트 데이터 준비
             context_data = {
                 'mode': ai_result.get('mode', session_config.get('mode')),
@@ -312,7 +297,7 @@ class EnhancedConversationService:
                 'step': ai_result.get('step', 0),
                 'total_steps': ai_result.get('total_steps', 0)
             }
-            
+
             # 데이터 수집기에 로깅
             await self.data_collector.log_conversation_turn(
                 session_id=session_id,
@@ -325,82 +310,95 @@ class EnhancedConversationService:
                 response_time_ms=response_time_ms,
                 context_data=context_data
             )
-            
+
             logger.debug(f"💾 대화 데이터 저장: {session_id}#{turn_index}")
-            
+
         except Exception as e:
             logger.error(f"대화 데이터 로깅 오류: {e}")
-    
+
     async def _process_openai_message(
-        self,
-        session_id: str,
-        user_message: str
+            self,
+            session_id: str,
+            user_message: str,
+            translate: bool = False  # 👈 앱으로부터 번역 요청 플래그를 받음
     ) -> Dict[str, Any]:
-        """OpenAI 모드 메시지 처리"""
-        
+        """OpenAI 모드 메시지 처리 (번역 기능 추가)"""
+
         try:
             session_config = self.openai_sessions[session_id]
-            
-            # GPT-4로 응답 생성
+
+            # translate 플래그가 True이면, 번역 언어를 'ko'로 설정
+            translate_to = 'ko' if translate else None
+
+            # GPT-4로 응답 생성 (번역 요청 포함)
             ai_result = await openai_service.generate_ai_response(
                 session_id=session_id,
                 user_message=user_message,
                 situation=session_config['situation'],
                 language=session_config['language'],
-                difficulty=session_config['difficulty']
+                difficulty=session_config['difficulty'],
+                translate_to=translate_to # 👈 openai_service로 번역 언어 전달
             )
-            
+
             if ai_result["success"]:
+                # (이전의 구분자 후처리 로직은 그대로 유지됩니다)
+                raw_message = ai_result.get("ai_message", "")
+                official_separator = '\n\n======== Recommended ========\n\n'
+                pattern = re.compile(r'^\s*={5,}\s*Recommended\s*={5,}\s*$|^\s*={10,}\s*$', re.MULTILINE)
+                processed_message, num_replacements = pattern.subn(official_separator, raw_message)
+                if num_replacements > 0:
+                    ai_result["ai_message"] = processed_message.strip()
+
                 # 턴 카운트 증가
                 session_config['turn_count'] += 1
-                
+
                 return {
                     "success": True,
                     "mode": session_config['mode'],
                     "ai_message": ai_result["ai_message"],
+                    "translated_text": ai_result.get("translated_text"), # 번역 결과 포함
                     "feedback": ai_result["feedback"],
                     "turn_count": session_config['turn_count'],
                     "tokens_used": ai_result.get("tokens_used", 0),
                     "model": ai_result.get("model", "gpt-4"),
-                    "completed": False  # OpenAI 모드는 무한 대화
+                    "completed": False
                 }
             else:
-                # OpenAI 실패시 폴백
                 if ai_result.get("fallback"):
                     logger.warning(f"OpenAI 실패, 시나리오 모드로 폴백: {session_id}")
                     return await self._fallback_to_scenario(session_id, user_message)
                 else:
                     return ai_result
-                    
+
         except Exception as e:
             logger.error(f"OpenAI 메시지 처리 오류: {e}")
             return {
                 "success": False,
                 "error": f"메시지 처리 중 오류: {str(e)}"
             }
-    
+
     async def _process_scenario_message(
-        self,
-        session_id: str,
-        user_message: str
+            self,
+            session_id: str,
+            user_message: str
     ) -> Dict[str, Any]:
         """시나리오 모드 메시지 처리 (기존 로직)"""
-        
+
         scenario_data = self.current_scenarios[session_id]
         current_step = scenario_data['current_step']
         scenario = scenario_data['scenario']
-        
+
         # 현재 단계의 기대 응답과 비교
         if current_step < len(scenario['steps']):
             step_data = scenario['steps'][current_step]
-            
+
             # 응답 분석
             feedback = self._analyze_user_response(
-                user_message, 
+                user_message,
                 step_data['expected_responses'],
                 step_data['feedback_tips']
             )
-            
+
             # 사용자 응답 기록
             scenario_data['user_responses'].append({
                 'step': current_step + 1,
@@ -408,11 +406,11 @@ class EnhancedConversationService:
                 'feedback': feedback,
                 'timestamp': datetime.now().isoformat()
             })
-            
+
             # 다음 단계로 진행
             scenario_data['current_step'] += 1
             next_step = scenario_data['current_step']
-            
+
             if next_step < len(scenario['steps']):
                 # 다음 단계가 있는 경우
                 next_step_data = scenario['steps'][next_step]
@@ -436,25 +434,25 @@ class EnhancedConversationService:
                     "completed": True,
                     "summary": self._generate_scenario_summary(scenario_data)
                 }
-        
+
         return {
             "success": False,
             "error": "시나리오가 이미 완료되었습니다."
         }
-    
+
     async def _fallback_to_scenario(
-        self,
-        session_id: str,
-        user_message: str
+            self,
+            session_id: str,
+            user_message: str
     ) -> Dict[str, Any]:
         """OpenAI 실패시 시나리오 모드로 폴백"""
-        
+
         try:
             session_config = self.openai_sessions[session_id]
-            
+
             # 시나리오 모드로 전환
             scenario_session_id = f"{session_id}_fallback"
-            
+
             # 시나리오 시작
             result = await self._start_scenario_mode(
                 session_id=scenario_session_id,
@@ -462,11 +460,11 @@ class EnhancedConversationService:
                 difficulty=session_config['difficulty'],
                 language=session_config['language']
             )
-            
+
             if result["success"]:
                 # 원래 세션 정리
                 del self.openai_sessions[session_id]
-                
+
                 return {
                     "success": True,
                     "mode": "fallback_scenario",
@@ -476,34 +474,34 @@ class EnhancedConversationService:
                 }
             else:
                 return result
-                
+
         except Exception as e:
             logger.error(f"폴백 처리 오류: {e}")
             return {
                 "success": False,
                 "error": "폴백 처리 중 오류가 발생했습니다."
             }
-    
+
     async def _start_scenario_mode(
-        self,
-        session_id: str,
-        situation: str,
-        difficulty: str,
-        language: str
+            self,
+            session_id: str,
+            situation: str,
+            difficulty: str,
+            language: str
     ) -> Dict[str, Any]:
         """기존 시나리오 모드로 대화 시작"""
-        
+
         # 난이도에 맞는 시나리오 선택
         scenarios = self.conversation_scenarios[situation]['scenarios']
-        
+
         if not scenarios:
             scenario = self._get_default_scenario(situation, difficulty)
         else:
             scenario = random.choice(scenarios)
-        
+
         # 시나리오 구조화
         structured_scenario = self._create_scenario_structure(scenario, situation, difficulty, language)
-        
+
         # 세션에 저장
         self.current_scenarios[session_id] = {
             'situation': situation,
@@ -515,7 +513,7 @@ class EnhancedConversationService:
             'user_responses': [],
             'started_at': datetime.now().isoformat()
         }
-        
+
         return {
             "success": True,
             "mode": self.SCENARIO_MODE,
@@ -525,58 +523,58 @@ class EnhancedConversationService:
             "expected_responses": structured_scenario['steps'][0]['expected_responses'],
             "data_collection": bool(self.data_collector)
         }
-    
+
     def start_scenario(
-        self,
-        session_id: str,
-        situation: str,
-        difficulty: str = "beginner"
+            self,
+            session_id: str,
+            situation: str,
+            difficulty: str = "beginner"
     ) -> Dict[str, Any]:
         """기존 API 호환성을 위한 동기 버전"""
-        
+
         # 비동기 버전을 동기로 래핑
         import asyncio
-        
+
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
+
         return loop.run_until_complete(
             self.start_conversation(session_id, situation, difficulty, "en", "auto")
         )
-    
+
     def _get_scenario_context(self, situation: str) -> Dict[str, Any]:
         """상황별 시나리오 컨텍스트 추출"""
-        
+
         scenarios = self.conversation_scenarios.get(situation, {}).get('scenarios', [])
-        
+
         if not scenarios:
             return {"phrases": [], "topics": [], "scenario_count": 0}
-        
+
         # 핵심 표현 수집
         all_phrases = []
         for scenario in scenarios[:10]:  # 최대 10개 시나리오에서 추출
             phrases = scenario.get('key_phrases', [])
             all_phrases.extend(phrases)
-        
+
         # 중복 제거 및 상위 표현 선택
         unique_phrases = list(set(all_phrases))[:15]
-        
+
         # 주요 주제 추출
         topics = [f"{situation} conversation", f"{situation} vocabulary", f"{situation} situations"]
-        
+
         return {
             "phrases": unique_phrases,
             "topics": topics,
             "scenario_count": len(scenarios)
         }
-    
+
     def _infer_situation_from_text(self, text: str) -> str:
         """텍스트에서 상황 추정"""
         text_lower = text.lower()
-        
+
         if any(word in text_lower for word in ['airport', 'flight', 'boarding', 'check-in', 'gate', 'passport']):
             return 'airport'
         elif any(word in text_lower for word in ['restaurant', 'menu', 'order', 'table', 'waiter', 'food']):
@@ -587,13 +585,13 @@ class EnhancedConversationService:
             return 'street'
         else:
             return 'general'
-    
+
     def _extract_scenario_from_dialogue(self, dialogue_text: str, situation: str) -> Optional[Dict]:
         """실제 대화에서 시나리오 패턴 추출"""
-        
+
         if not dialogue_text or len(dialogue_text.strip()) < 10:
             return None
-        
+
         # 대화에서 주요 패턴 찾기
         patterns = {
             'airport': [
@@ -613,15 +611,15 @@ class EnhancedConversationService:
                 r'bus|subway|taxi|walk|turn|block'
             ]
         }
-        
+
         situation_patterns = patterns.get(situation, [])
-        
+
         # 패턴 매칭으로 관련도 확인
         relevance_score = 0
         for pattern in situation_patterns:
             matches = len(re.findall(pattern, dialogue_text.lower()))
             relevance_score += matches
-        
+
         # 최소 관련도 기준 완화
         if relevance_score >= 0:  # 0 이상이면 포함
             return {
@@ -630,12 +628,12 @@ class EnhancedConversationService:
                 'key_phrases': self._extract_key_phrases(dialogue_text, situation),
                 'difficulty': 'intermediate'  # 기본값
             }
-        
+
         return None
-    
+
     def _extract_key_phrases(self, text: str, situation: str) -> List[str]:
         """대화에서 핵심 표현 추출"""
-        
+
         key_phrase_patterns = {
             'airport': [
                 'check in', 'boarding pass', 'gate number', 'departure time',
@@ -654,19 +652,19 @@ class EnhancedConversationService:
                 'straight ahead', 'next to', 'across from', 'thank you'
             ]
         }
-        
+
         phrases = key_phrase_patterns.get(situation, [])
         found_phrases = []
-        
+
         for phrase in phrases:
             if phrase.lower() in text.lower():
                 found_phrases.append(phrase)
-        
+
         return found_phrases[:5]  # 최대 5개
-    
+
     def _create_scenario_structure(self, base_scenario: Dict, situation: str, difficulty: str, language: str = "en") -> Dict:
         """언어별 시나리오 구조 생성"""
-        
+
         # 언어별 시나리오 템플릿
         scenario_templates = {
             'ko': {
@@ -1020,7 +1018,7 @@ class EnhancedConversationService:
                 }
             }
         }
-        
+
         # 언어별 템플릿 선택
         templates = scenario_templates.get(language, scenario_templates['en'])
         template = templates.get(situation, templates.get('airport', {
@@ -1034,23 +1032,23 @@ class EnhancedConversationService:
                 }
             ]
         }))
-        
+
         return template
-    
+
     def _analyze_user_response(
-        self, 
-        user_message: str, 
-        expected_responses: List[str],
-        feedback_tip: str
+            self,
+            user_message: str,
+            expected_responses: List[str],
+            feedback_tip: str
     ) -> Dict[str, Any]:
         """사용자 응답 분석 및 피드백 생성 - 개선된 버전"""
-        
+
         user_lower = user_message.lower().strip()
-        
+
         # 정확도 계산 (개선된 키워드 매칭)
         accuracy_score = 0
         matched_keywords = []
-        
+
         # 각 기대 응답과 사용자 입력 비교
         for expected in expected_responses:
             expected_words = expected.lower().split()
@@ -1058,16 +1056,16 @@ class EnhancedConversationService:
                 if len(word) > 2 and word in user_lower:  # 3글자 이상의 의미있는 단어만
                     accuracy_score += 1
                     matched_keywords.append(word)
-        
+
         # 부분 매칭도 고려 (더 유연한 평가)
         partial_matches = 0
         for expected in expected_responses:
             if any(part in user_lower for part in expected.lower().split() if len(part) > 2):
                 partial_matches += 1
-        
+
         # 최종 점수 계산
         total_score = accuracy_score + (partial_matches * 0.5)
-        
+
         # 피드백 생성 (기준 완화)
         if total_score >= 1.5 or len(matched_keywords) >= 2:
             feedback_level = "excellent"
@@ -1078,7 +1076,7 @@ class EnhancedConversationService:
         else:
             feedback_level = "needs_improvement"
             message = f"Try this instead: {feedback_tip}"
-        
+
         return {
             "level": feedback_level,
             "message": message,
@@ -1087,26 +1085,26 @@ class EnhancedConversationService:
             "matched_keywords": matched_keywords,
             "suggestions": [feedback_tip] if feedback_level == "needs_improvement" else []
         }
-    
+
     def _generate_scenario_summary(self, scenario_data: Dict) -> Dict[str, Any]:
         """시나리오 완료 후 요약 생성"""
-        
+
         responses = scenario_data['user_responses']
         total_responses = len(responses)
-        
+
         if total_responses == 0:
             return {"message": "No responses recorded"}
-        
+
         # 전체 정확도 계산
         total_accuracy = sum(r['feedback']['accuracy'] for r in responses)
         average_accuracy = total_accuracy / total_responses
-        
+
         # 레벨 분포
         level_counts = {}
         for response in responses:
             level = response['feedback']['level']
             level_counts[level] = level_counts.get(level, 0) + 1
-        
+
         return {
             "total_responses": total_responses,
             "average_accuracy": round(average_accuracy, 2),
@@ -1114,38 +1112,38 @@ class EnhancedConversationService:
             "completed_at": datetime.now().isoformat(),
             "duration_minutes": 5  # 실제로는 계산해야 함
         }
-    
+
     def _add_default_scenarios(self):
         """기본 시나리오 추가 (데이터 없을 때)"""
-        
+
         # 기존 데이터 유지하면서 기본값 추가
         default_situations = ['airport', 'restaurant', 'hotel', 'street']
-        
+
         for situation in default_situations:
             if situation not in self.conversation_scenarios:
                 self.conversation_scenarios[situation] = {
-                    'scenarios': [], 
-                    'dialogues': [], 
+                    'scenarios': [],
+                    'dialogues': [],
                     'common_phrases': []
                 }
-    
+
     def _get_default_scenario(self, situation: str, difficulty: str) -> Dict:
         """기본 시나리오 반환"""
-        
+
         return {
             'dialogue': f'Basic {situation} conversation scenario',
             'relevance_score': 1,
             'key_phrases': ['hello', 'please', 'thank you'],
             'difficulty': difficulty
         }
-    
+
     def get_available_situations(self) -> List[str]:
         """사용 가능한 상황 목록"""
         return list(self.conversation_scenarios.keys())
-    
+
     def get_session_status(self, session_id: str) -> Dict[str, Any]:
         """세션 상태 조회"""
-        
+
         # OpenAI 세션 확인
         if session_id in self.openai_sessions:
             session_config = self.openai_sessions[session_id]
@@ -1153,7 +1151,7 @@ class EnhancedConversationService:
                 conversation_summary = openai_service.get_conversation_summary(session_id)
             else:
                 conversation_summary = {"conversation_length": 0}
-            
+
             return {
                 "exists": True,
                 "mode": session_config['mode'],
@@ -1166,11 +1164,11 @@ class EnhancedConversationService:
                 "last_activity": session_config.get('last_activity', session_config['started_at']),
                 "data_collection": bool(session_config.get('user_id') and self.data_collector)
             }
-        
+
         # 시나리오 세션 확인
         elif session_id in self.current_scenarios:
             scenario_data = self.current_scenarios[session_id]
-            
+
             return {
                 "exists": True,
                 "mode": scenario_data.get('mode', self.SCENARIO_MODE),
@@ -1183,16 +1181,16 @@ class EnhancedConversationService:
                 "started_at": scenario_data['started_at'],
                 "data_collection": bool(self.data_collector)
             }
-        
+
         else:
             return {"exists": False}
-    
+
     async def end_conversation(self, session_id: str) -> Dict[str, Any]:
         """대화 세션 종료 (데이터 수집 포함)"""
-        
+
         try:
             summary = None
-            
+
             # OpenAI 세션 종료
             if session_id in self.openai_sessions:
                 session_config = self.openai_sessions[session_id]
@@ -1200,42 +1198,42 @@ class EnhancedConversationService:
                     summary = openai_service.get_conversation_summary(session_id)
                     openai_service.clear_conversation_history(session_id)
                 del self.openai_sessions[session_id]
-                
+
                 # 데이터 수집: 세션 종료 기록
                 if self.data_collector:
                     await self.data_collector.end_session(session_id, "completed")
-            
+
             # 시나리오 세션 종료
             elif session_id in self.current_scenarios:
                 scenario_data = self.current_scenarios[session_id]
                 summary = self._generate_scenario_summary(scenario_data)
                 del self.current_scenarios[session_id]
-                
+
                 # 데이터 수집: 세션 종료 기록
                 if self.data_collector:
                     await self.data_collector.end_session(session_id, "completed")
-            
+
             # 응답 시간 측정 데이터 정리
             if session_id in self.response_start_times:
                 del self.response_start_times[session_id]
-            
+
             return {
                 "success": True,
                 "message": "대화 세션이 종료되었습니다.",
                 "summary": summary,
                 "ended_at": datetime.now().isoformat()
             }
-            
+
         except Exception as e:
             logger.error(f"세션 종료 오류: {e}")
             return {
                 "success": False,
                 "error": f"세션 종료 중 오류: {str(e)}"
             }
-    
+
     async def get_openai_status(self) -> Dict[str, Any]:
         """OpenAI 서비스 상태 확인"""
-        
+
         if openai_service:
             return await openai_service.test_connection()
         else:
