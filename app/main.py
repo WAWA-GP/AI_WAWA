@@ -1,23 +1,39 @@
 # app/main.py
 # FastAPI 메인 서버 - AI 언어 학습 앱 (OpenAI 통합 + 데이터 수집 + Fine-tuning) with Swagger UI
 
+# ▼▼▼ [최종 해결책] 이 코드를 파일 최상단에 추가하세요. ▼▼▼
+import sys
+import os
+
+# 현재 파일(main.py)의 경로를 기준으로 프로젝트 루트 폴더(AI_WAWA)의 경로를 계산합니다.
+# main.py -> app -> AI_WAWA
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Python이 모듈을 검색하는 경로 목록에 프로젝트 루트 폴더를 추가합니다.
+sys.path.insert(0, project_root)
+# ▲▲▲ 여기까지 추가 ▲▲▲
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import os
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Path
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Path, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List
 import asyncio
+from contextlib import asynccontextmanager
 import json
+import re
 import logging
 import uvicorn
 from datetime import datetime, timedelta
 from supabase import create_client
 from app.services.pronunciation_data_service import pronunciation_data_service
 from app.services.pronunciation_analysis_service import pronunciation_service
+from app.services.voice_cloning_service import voice_cloning_service
 
 url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
@@ -29,19 +45,15 @@ else:
     logging.warning("Supabase 설정이 없습니다.")
 
 # 서비스 임포트
-try:
-    from app.services.conversation_ai_service import conversation_ai_service
-    from app.services.speech_recognition_service import stt_service
-    from app.services.text_to_speech_service import tts_service
-    from app.services.openai_service import openai_service
-    from app.services.level_test_service import level_test_service
-    from app.services.voice_cloning_service import voice_cloning_service
-    from app.services.conversation_data_collector import data_collector
-    from app.services.fine_tuning_manager import fine_tuning_manager
-except ImportError as e:
-    print("⚠️ 서비스 모듈을 찾을 수 없습니다. 경로를 확인해주세요.")
-    import sys
-    sys.exit(1)
+from app.services.conversation_ai_service import conversation_ai_service
+from app.services.speech_recognition_service import stt_service
+from app.services.text_to_speech_service import tts_service
+from app.services.openai_service import openai_service
+from app.services.level_test_service import level_test_service, grammar_practice_service
+from app.services.voice_cloning_service import voice_cloning_service
+from app.services.conversation_data_collector import data_collector
+from app.services.fine_tuning_manager import fine_tuning_manager
+
 
 # 로깅 설정
 logging.basicConfig(
@@ -49,6 +61,31 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 서버 시작 시 실행될 코드
+    logger.info("🚀 서버 시작: 데이터셋 사전 초기화를 시작합니다...")
+
+    # level_test_service와 grammar_practice_service의 데이터셋을 동시에 초기화
+    initialization_tasks = [
+        level_test_service._ensure_initialized(),
+        grammar_practice_service._ensure_initialized()
+    ]
+    await asyncio.gather(*initialization_tasks)
+
+    logger.info("✅ 데이터셋 사전 초기화 완료. 서버가 준비되었습니다.")
+
+    yield
+
+    # 서버 종료 시 실행될 코드 (현재는 비워둠)
+    logger.info("🌙 서버를 종료합니다.")
+
+class GrammarVoiceRequest(BaseModel):
+    user_id: str
+    audio_base64: str
+    language: str
+    level: str
 
 # FastAPI 앱 생성 with Swagger 설정
 app = FastAPI(
@@ -81,6 +118,7 @@ app = FastAPI(
     - A/B 테스트로 성능 검증
     """,
     version="3.0.0",
+    lifespan=lifespan,
     contact={
         "name": "Language Learning Team",
         "email": "support@example.com",
@@ -106,6 +144,33 @@ app.add_middleware(
 # 연결된 WebSocket 클라이언트 관리
 connected_clients: Dict[str, WebSocket] = {}
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """HTTP 예외를 일관된 JSON 형식으로 처리합니다."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": exc.detail,
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """처리되지 않은 모든 예외를 일관된 JSON 형식으로 처리합니다."""
+    logger.error(f"예상치 못한 서버 오류 발생: {exc}")
+    import traceback
+    logger.error(f"상세 스택 트레이스:\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": "요청을 처리하는 중 예기치 않은 문제가 발생했습니다. 잠시 후 다시 시도해주세요.",
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
 # === Pydantic 모델들 (기존 + 새로운 데이터 수집용) ===
 
 class ConversationStartRequest(BaseModel):
@@ -114,6 +179,7 @@ class ConversationStartRequest(BaseModel):
     difficulty: str = Field("beginner", description="난이도 (beginner, intermediate, advanced)")
     language: str = Field("en", description="언어 코드 (ko, en, ja, zh)")
     mode: str = Field("auto", description="대화 모드 (scenario, openai, hybrid, auto)")
+    translate: bool = False
     
     class Config:
         json_schema_extra = {
@@ -130,27 +196,38 @@ class TextMessageRequest(BaseModel):
     session_id: str = Field(..., description="세션 ID")
     message: str = Field(..., description="사용자 메시지")
     language: str = Field("en", description="언어 코드")
-    
+    translate: bool = Field(False, description="번역 요청 여부 (초보자 모드)") # 👈 [FIX] Add this line
+
     class Config:
         json_schema_extra = {
             "example": {
                 "session_id": "session_12345",
                 "message": "I would like to order a coffee, please.",
-                "language": "en"
+                "language": "en",
+                "translate": True
             }
         }
+
+class SSMLCorrectionRequest(BaseModel):
+    user_id: str
+    user_audio_base64: str
+    target_text: str
+    language: str = "en"
+    user_level: str = "B1"
 
 class VoiceMessageRequest(BaseModel):
     session_id: str = Field(..., description="세션 ID")
     audio_base64: str = Field(..., description="Base64 인코딩된 오디오 데이터")
     language: str = Field("en", description="언어 코드")
-    
+    translate: bool = Field(False, description="번역 요청 여부 (초보자 모드)") # 👈 [FIX] Add this line
+
     class Config:
         json_schema_extra = {
             "example": {
                 "session_id": "session_12345",
                 "audio_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
-                "language": "en"
+                "language": "en",
+                "translate": True
             }
         }
 
@@ -284,6 +361,16 @@ class PronunciationResponse(BaseModel):
             }
         }
 
+class GrammarStartRequest(BaseModel):
+    user_id: str
+    language: str
+    level: str
+
+class GrammarAnswerRequest(BaseModel):
+    session_id: str
+    question_id: str
+    answer: str
+
 class VoiceCloneRequest(BaseModel):
     user_id: str = Field(..., description="사용자 고유 ID")
     voice_sample_base64: str = Field(..., description="Base64 인코딩된 음성 샘플")
@@ -299,22 +386,8 @@ class VoiceCloneRequest(BaseModel):
         }
 
 class PersonalizedCorrectionRequest(BaseModel):
-    user_id: str = Field(..., description="사용자 고유 ID")
-    target_text: str = Field(..., description="교정할 대상 텍스트")
-    user_audio_base64: str = Field(..., description="사용자 발음 오디오 (Base64)")
-    user_level: str = Field("B1", description="사용자 레벨 (A1-C2)")
-    language: str = Field("en", description="언어 코드")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "user_id": "user123",
-                "target_text": "Can I book a flight to LA now?",
-                "user_audio_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
-                "user_level": "B1",
-                "language": "en"
-            }
-        }
+    user_id: str = Field(..., description="요청하는 사용자의 고유 ID")
+    session_id: str = Field(..., description="발음 분석 시 반환된 세션 ID")
 
 # === 도우미 함수들 ===
 
@@ -694,58 +767,35 @@ async def initialize_user(
         logger.error(f"사용자 초기화 오류: {e}")
         raise HTTPException(status_code=500, detail=f"사용자 초기화 중 오류: {str(e)}")
 
-@app.post("/api/level-test/start", tags=["Level Test"],
-         summary="레벨 테스트 시작",
-         description="사용자의 언어 실력을 평가하는 적응형 레벨 테스트를 시작합니다.")
+@app.post("/api/level-test/start", tags=["Level Test"], summary="레벨 테스트 시작")
 async def start_level_test(request: LevelTestStartRequest):
-    """사용자 레벨 테스트 시작"""
     try:
         logger.info(f"레벨 테스트 시작 요청: {request.user_id} - {request.language}")
-        
-        result = await level_test_service.start_level_test(
-            user_id=request.user_id,
-            language=request.language
-        )
-        
+        result = await level_test_service.start_level_test(user_id=request.user_id, language=request.language)
         if result["success"]:
-            return {
-                "success": True,
-                "message": "레벨 테스트가 시작되었습니다.",
-                "data": result
-            }
-        else:
-            raise HTTPException(status_code=400, detail=result["error"])
-            
+            return result
+        # 서비스에서 실패 시 반환된 오류 메시지를 사용하여 예외 발생
+        raise HTTPException(status_code=400, detail=result.get("error", "레벨 테스트를 시작할 수 없습니다."))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"레벨 테스트 시작 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"레벨 테스트 시작 중 오류: {str(e)}")
+        logger.error(f"레벨 테스트 시작 중 예상치 못한 오류: {e}")
+        # 중앙 핸들러가 처리하도록 예외를 다시 발생시킴
+        raise
 
-@app.post("/api/level-test/answer", tags=["Level Test"],
-         summary="레벨 테스트 답변 제출",
-         description="레벨 테스트 문제에 대한 답변을 제출하고 다음 문제 또는 결과를 받습니다.")
+@app.post("/api/level-test/answer", tags=["Level Test"], summary="레벨 테스트 답변 제출")
 async def submit_test_answer(request: LevelTestAnswerRequest):
-    """레벨 테스트 답변 제출"""
     try:
         logger.info(f"레벨 테스트 답변 제출: {request.session_id} - {request.question_id}")
-        
-        result = await level_test_service.submit_answer(
-            session_id=request.session_id,
-            question_id=request.question_id,
-            answer=request.answer
-        )
-        
+        result = await level_test_service.submit_answer(session_id=request.session_id, question_id=request.question_id, answer=request.answer)
         if result["success"]:
-            return {
-                "success": True,
-                "message": "답변이 처리되었습니다.",
-                "data": result
-            }
-        else:
-            raise HTTPException(status_code=400, detail=result["error"])
-            
+            return {"success": True, "message": "답변이 처리되었습니다.", "data": result}
+        raise HTTPException(status_code=400, detail=result.get("error", "답변 처리에 실패했습니다."))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"답변 처리 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"답변 처리 중 오류: {str(e)}")
+        logger.error(f"답변 처리 중 예상치 못한 오류: {e}")
+        raise
 
 @app.get("/api/level-test/{session_id}/status", tags=["Level Test"],
         summary="레벨 테스트 상태 조회",
@@ -793,6 +843,17 @@ async def get_level_test_results(session_id: str):
     except Exception as e:
         logger.error(f"결과 조회 오류: {e}")
         raise HTTPException(status_code=500, detail=f"결과 조회 중 오류: {str(e)}")
+
+@app.post("/api/level-test/start-mini")
+async def start_mini_test_endpoint(request: dict):
+    """3문제짜리 미니 어휘력 테스트를 시작합니다."""
+    user_id = request.get("user_id")
+    language = request.get("language", "english")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    return await level_test_service.start_mini_vocab_test(user_id=user_id, language=language)
+
 
 @app.post("/api/user/complete-assessment", tags=["User"],
          summary="레벨 평가 완료",
@@ -861,60 +922,70 @@ async def complete_assessment(
 # === 대화 관리 API (데이터 수집 포함) ===
 
 @app.post("/api/conversation/start", tags=["Conversation"],
-         summary="대화 세션 시작 (데이터 수집 포함)",
-         description="새로운 대화 세션을 시작하고 데이터 수집을 활성화합니다.",
-         response_model=ConversationResponse)
+          summary="대화 세션 시작 (데이터 수집 포함)",
+          description="새로운 대화 세션을 시작하고 데이터 수집을 활성화합니다.",
+          response_model=ConversationResponse)
 async def start_conversation_with_data_collection(request: ConversationStartRequest):
     """새로운 대화 세션 시작 (데이터 수집 포함)"""
-    
+
     try:
         logger.info(f"대화 시작 요청 (데이터 수집): {request.user_id} - {request.situation}")
-        
-        # 세션 ID 생성
+
         session_id = f"{request.user_id}_{request.situation}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # 향상된 대화 서비스로 시작 (user_id 포함)
+
+        # ▼▼▼ [수정 1/2] service 호출 시 'translate' 파라미터를 전달합니다. ▼▼▼
         result = await conversation_ai_service.start_conversation(
             session_id=session_id,
             situation=request.situation,
             difficulty=request.difficulty,
             language=request.language,
             mode=request.mode,
-            user_id=request.user_id  # 데이터 수집을 위한 user_id 추가
+            user_id=request.user_id,
+            translate=request.translate # <--- 이 줄이 추가되었습니다.
         )
-        
+
         if result["success"]:
+            # ▼▼▼ [수정 2/2] 변경된 'result' 구조에 맞춰 데이터를 가져옵니다. ▼▼▼
+
+            # 1. service가 반환한 'data' 딕셔너리를 가져옵니다.
+            service_data = result.get("data", {})
+
+            # 2. 'data' 딕셔너리 안에서 필요한 값들을 꺼냅니다.
             response_data = {
-                "session_id": session_id,
+                "session_id": service_data.get("session_id"),
                 "situation": request.situation,
                 "difficulty": request.difficulty,
                 "language": request.language,
-                "mode": result["mode"],
-                "scenario_title": result.get("scenario_title", f"{request.situation.title()} Conversation"),
-                "ai_message": result["first_message"],
-                "features": result.get("features", []),
-                "scenario_context": result.get("scenario_context", {}),
+                "mode": service_data.get("mode"),
+                "scenario_title": service_data.get("scenario_title"),
+                "ai_message": service_data.get("ai_message"),
+                "translated_text": service_data.get("translated_text"), # 번역문 추가
+                "features": service_data.get("features", []),
+                "scenario_context": service_data.get("scenario_context", {}),
                 "available_situations": conversation_ai_service.get_available_situations(),
-                "data_collection_enabled": result.get("data_collection", False)  # 데이터 수집 상태
+                "data_collection_enabled": service_data.get("data_collection_enabled", False)
             }
-            
-            # 시나리오 모드일 때만 expected_responses 추가
-            if "expected_responses" in result:
-                response_data["expected_responses"] = result["expected_responses"]
-            
+
+            if "expected_responses" in service_data:
+                response_data["expected_responses"] = service_data["expected_responses"]
+
+            # ▲▲▲ 여기까지 수정 ▲▲▲
+
             logger.info(f"대화 세션 시작 성공 (데이터 수집): {session_id}")
-            
+
             return ConversationResponse(
                 success=True,
-                message=f"대화 세션이 시작되었습니다. 데이터 수집이 활성화되었습니다.",
+                message="대화 세션이 시작되었습니다. 데이터 수집이 활성화되었습니다.",
                 data=response_data
             )
         else:
             logger.warning(f"대화 시작 실패: {result['error']}")
             raise HTTPException(status_code=400, detail=result["error"])
-            
+
     except Exception as e:
         logger.error(f"대화 시작 오류: {e}")
+        import traceback
+        logger.error(traceback.format_exc()) # 더 자세한 오류 로그를 위해 추가
         raise HTTPException(status_code=500, detail=f"대화 시작 중 오류: {str(e)}")
 
 @app.post("/api/conversation/text", tags=["Conversation"],
@@ -923,20 +994,21 @@ async def start_conversation_with_data_collection(request: ConversationStartRequ
          response_model=ConversationResponse)
 async def send_text_message(request: TextMessageRequest):
     """텍스트 메시지 처리 (데이터 수집 포함)"""
-    
+
     try:
         logger.info(f"텍스트 메시지: {request.session_id} - {request.message[:50]}...")
-        
+
         # 입력 검증
         if not request.message or request.message.strip() == "":
             raise HTTPException(status_code=400, detail="메시지가 비어있습니다.")
-        
+
         # 향상된 대화 AI 처리 (데이터 수집 포함)
         result = await conversation_ai_service.process_user_response(
             session_id=request.session_id,
-            user_message=request.message
+            user_message=request.message,
+            translate=request.translate
         )
-        
+
         if result["success"]:
             # TTS로 AI 응답 음성 생성
             ai_audio = None
@@ -949,24 +1021,24 @@ async def send_text_message(request: TextMessageRequest):
             except Exception as tts_error:
                 logger.warning(f"TTS 생성 실패: {tts_error}")
                 ai_audio = None
-            
+
             # 기본 피드백 구조 보장
             feedback = result.get("feedback", {})
             if not isinstance(feedback, dict):
                 feedback = {}
-            
+
             # 필수 피드백 키들 보장
             feedback.setdefault("level", "good")
             feedback.setdefault("message", "잘했어요! 계속 연습해보세요.")
             feedback.setdefault("accuracy", 0.85)
             feedback.setdefault("grammar_score", 0.9)
             feedback.setdefault("suggestions", [])
-            
+
             # 단계 정보 계산
             step = result.get("step", 1)
             total_steps = result.get("total_steps", 5)
             completed = result.get("completed", False)
-            
+
             # 응답 데이터 구성
             response_data = {
                 "session_id": request.session_id,
@@ -977,9 +1049,10 @@ async def send_text_message(request: TextMessageRequest):
                 "feedback": feedback,
                 "step": step,
                 "total_steps": total_steps,
-                "completed": completed
+                "completed": completed,
+                "translated_text": result.get("translated_text")
             }
-            
+
             # 모드별 추가 데이터
             if result.get("mode") in ["openai", "hybrid"]:
                 response_data.update({
@@ -991,7 +1064,7 @@ async def send_text_message(request: TextMessageRequest):
                 response_data.update({
                     "expected_responses": result.get("expected_responses", [])
                 })
-            
+
             # 완료시 요약 추가
             if completed:
                 summary = result.get("summary", {})
@@ -1005,9 +1078,9 @@ async def send_text_message(request: TextMessageRequest):
                         "session_id": request.session_id
                     }
                 response_data["summary"] = summary
-            
+
             logger.info(f"텍스트 처리 성공: {request.session_id}")
-            
+
             return ConversationResponse(
                 success=True,
                 message="메시지가 처리되었습니다.",
@@ -1017,7 +1090,7 @@ async def send_text_message(request: TextMessageRequest):
             error_msg = result.get("error", "알 수 없는 오류가 발생했습니다.")
             logger.warning(f"텍스트 처리 실패: {error_msg}")
             raise HTTPException(status_code=400, detail=error_msg)
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1027,43 +1100,47 @@ async def send_text_message(request: TextMessageRequest):
         raise HTTPException(status_code=500, detail=f"텍스트 처리 중 오류가 발생했습니다: {str(e)}")
 
 @app.post("/api/conversation/voice", tags=["Conversation"],
-         summary="음성 메시지 전송",
-         description="음성 메시지를 텍스트로 변환하여 대화에 사용합니다.",
-         response_model=ConversationResponse)
+          summary="음성 메시지 전송",
+          description="음성 메시지를 텍스트로 변환하여 대화에 사용합니다.",
+          response_model=ConversationResponse)
 async def send_voice_message(request: VoiceMessageRequest):
     """음성 메시지 처리"""
-    
+
     try:
         logger.info(f"음성 메시지: {request.session_id}")
-        
+
         # STT로 음성을 텍스트로 변환
         recognized_text = await stt_service.recognize_from_base64(
             audio_base64=request.audio_base64,
             language=request.language
         )
-        
+
+        # ▼▼▼ [수정] 음성 인식 실패 시 오류 메시지 변경 ▼▼▼
         if not recognized_text:
-            raise HTTPException(status_code=400, detail="음성 인식에 실패했습니다.")
-        
+            # 400 Bad Request: 클라이언트의 요청이 잘못됨 (음성 데이터가 불분명)
+            raise HTTPException(status_code=400, detail="목소리를 인식할 수 없습니다. 주변 소음이 없는 곳에서 다시 시도해주세요.")
+
         logger.info(f"음성 인식 결과: {recognized_text}")
-        
+
         # 텍스트 메시지로 처리
         text_request = TextMessageRequest(
             session_id=request.session_id,
             message=recognized_text,
-            language=request.language
+            language=request.language,
+            translate=request.translate
         )
-        
+
         # 기존 텍스트 처리 로직 재사용
         response = await send_text_message(text_request)
-        
-        # 음성 인식 결과 추가
-        if response.data:
-            response.data["recognized_text"] = recognized_text
-            response.data["original_audio"] = True
-        
-        return response
-        
+
+        # 음성 인식 결과 추가 (JSON 응답으로 변환하여 수정)
+        response_body = json.loads(response.body)
+        if "data" in response_body and response_body["data"] is not None:
+            response_body["data"]["recognized_text"] = recognized_text
+            response_body["data"]["original_audio"] = True
+
+        return JSONResponse(content=response_body)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1283,6 +1360,75 @@ async def export_training_data(
         logger.error(f"훈련 데이터 내보내기 오류: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/pronunciation/ssml-correction", tags=["Pronunciation"])
+async def generate_ssml_corrected_pronunciation(request: SSMLCorrectionRequest):
+    """
+    [개선된 통합 API] 사용자 발음을 분석하고, 점수와 레벨에 따라
+    SSML로 상세 교정한 음성을 생성합니다.
+    """
+    try:
+        # --- 1. 발음 분석 (세부 점수 활용) ---
+        analysis_result = await pronunciation_service.analyze_pronunciation_from_base64(
+            audio_base64=request.user_audio_base64,
+            target_text=request.target_text,
+            user_level=request.user_level,
+            language=request.language
+        )
+
+        # --- 2. 고급 SSML 생성 (분석 결과 기반 동적 생성) ---
+        words_and_punctuations = re.findall(r"[\w']+|[.,!?]", request.target_text)
+        ssml_parts = []
+        scores = analysis_result.scores
+        low_score_areas = {area for area, score in scores.items() if score < 80}
+
+        for item in words_and_punctuations:
+            if re.match(r"[\w']+", item): # 단어인 경우
+                word = item
+                correct_ipa = pronunciation_service.core_service.data_manager.get_ipa_for_word(word)
+                if correct_ipa:
+                    phoneme_tag = f'<phoneme alphabet="ipa" ph="{correct_ipa}">{word}</phoneme>'
+                    # 강세(stress) 점수가 낮으면 emphasis 태그 추가
+                    ssml_parts.append(f'<emphasis level="strong">{phoneme_tag}</emphasis>' if 'stress' in low_score_areas else phoneme_tag)
+                else:
+                    ssml_parts.append(word)
+            else: # 구두점인 경우
+                # 리듬(rhythm) 점수가 낮으면 구두점 뒤에 쉬는 시간 추가
+                pause = '250ms' if 'rhythm' in low_score_areas else '100ms'
+                ssml_parts.append(f'{item}<break time="{pause}"/>')
+
+        ssml_content = ' '.join(ssml_parts)
+
+        # 유창성(fluency) 점수가 낮거나 A1 레벨이면 전체 속도를 느리게 조정
+        rate = "slow" if 'fluency' in low_score_areas or request.user_level == "A1" else "medium"
+        final_ssml = f'<speak><prosody rate="{rate}">{ssml_content}</prosody></speak>'
+        logger.info(f"생성된 최종 SSML: {final_ssml}")
+
+        # --- 3. 음성 생성 (레벨별 설정 적용) ---
+        correction_result = await voice_cloning_service._generate_speech_with_voice(
+            voice_id=voice_cloning_service.user_voices[request.user_id]['voice_id'],
+            text_or_ssml=final_ssml,
+            language=request.language,
+            user_level=request.user_level
+        )
+
+        if correction_result["success"]:
+            return {
+                "success": True, "message": "SSML 기반 발음 교정이 완료되었습니다.",
+                "data": {
+                    "original_analysis": analysis_result,
+                    "corrected_audio_base64": correction_result["audio_base64"],
+                    "generated_ssml": final_ssml
+                }
+            }
+        else:
+            raise HTTPException(status_code=500, detail=correction_result.get("error"))
+
+    except Exception as e:
+        logger.error(f"SSML 교정 최종 오류: {e}")
+        import traceback
+        logger.error(f"상세 오류: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # === Fine-tuning API ===
 
 @app.post("/api/fine-tuning/start/{situation}", tags=["Fine-tuning"],
@@ -1439,77 +1585,65 @@ async def test_fine_tuned_model(
 # === 발음 분석 API ===
 
 @app.post("/api/pronunciation/analyze", tags=["Pronunciation"],
-         summary="음성 억양 분석 (데이터 저장 포함)",
-         description="사용자의 음성을 분석하여 발음, 억양, 리듬 등을 평가하고 선택적으로 데이터베이스에 저장합니다.",
-         response_model=PronunciationResponse)
+          summary="음성 억양 분석 (데이터 저장 포함)",
+          description="사용자의 음성을 분석하여 발음, 억양, 리듬 등을 평가하고 선택적으로 데이터베이스에 저장합니다.",
+          response_model=PronunciationResponse)
 async def analyze_pronunciation_with_storage(request: PronunciationAnalysisRequest):
     """음성 억양 분석 (데이터 저장 기능 포함)"""
-    
+
     try:
         logger.info(f"억양 분석 요청: {len(request.target_text)} 글자, 레벨: {request.user_level}, 저장: {request.save_to_database}")
-        
-        # 입력 검증
-        if not request.audio_base64:
-            raise HTTPException(status_code=400, detail="음성 데이터가 없습니다.")
-        
-        if not request.target_text:
-            raise HTTPException(status_code=400, detail="대상 텍스트가 없습니다.")
-        
-        # 데이터 저장이 요청되었지만 필수 정보가 없는 경우
+
+        if not request.audio_base64 or not request.target_text:
+            raise HTTPException(status_code=400, detail="음성 데이터와 대상 텍스트가 모두 필요합니다.")
+
         if request.save_to_database and (not request.user_id or not request.session_id):
             raise HTTPException(status_code=400, detail="데이터 저장을 위해서는 user_id와 session_id가 필요합니다.")
-        
-        # 억양 분석 수행 (데이터 저장 포함 여부에 따라)
-        if request.save_to_database:
-            result = await pronunciation_service.analyze_pronunciation_from_base64(
-                audio_base64=request.audio_base64,
-                target_text=request.target_text,
-                user_level=request.user_level,
-                language=request.language,
-                user_id=request.user_id,
-                session_id=request.session_id
-            )
-        else:
-            result = await pronunciation_service.analyze_pronunciation_from_base64(
-                audio_base64=request.audio_base64,
-                target_text=request.target_text,
-                user_level=request.user_level,
-                language=request.language
-            )
-        
-        # 응답 데이터 구성
+
+        # 억양 분석 서비스 호출
+        result = await pronunciation_service.analyze_pronunciation_from_base64(
+            audio_base64=request.audio_base64,
+            target_text=request.target_text,
+            user_level=request.user_level,
+            language=request.language,
+            user_id=request.user_id if request.save_to_database else None,
+            session_id=request.session_id if request.save_to_database else None
+        )
+
+        # [핵심 수정] 앱이 사용하기 편하도록 데이터 구조를 평탄화(flatten)합니다.
         response_data = {
             "analysis_id": f"pronunciation_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "target_text": request.target_text,
             "user_level": request.user_level,
             "language": request.language,
-            "scores": {
-                "overall": result.overall_score,
-                "pitch": result.pitch_score,
-                "rhythm": result.rhythm_score,
-                "stress": result.stress_score,
-                "fluency": result.fluency_score
-            },
+
+            # 'scores' 객체 대신 점수들을 바로 최상위 레벨로 꺼냅니다.
+            "overall_score": result.overall_score,
+            "pitch_score": result.pitch_score,
+            "rhythm_score": result.rhythm_score,
+            "stress_score": result.stress_score,
+            "fluency_score": result.fluency_score,
+
+            # 'feedback' 객체 대신 피드백들을 바로 최상위 레벨로 꺼냅니다.
+            "detailed_feedback": result.detailed_feedback,
+            "suggestions": result.suggestions,
+            "phoneme_scores": result.phoneme_scores,
+
             "grade": _get_grade_from_score(result.overall_score),
-            "feedback": {
-                "detailed": result.detailed_feedback,
-                "suggestions": result.suggestions,
-                "phoneme_scores": result.phoneme_scores
-            },
             "improvement_priority": _get_improvement_priority(result),
             "analyzed_at": datetime.now().isoformat(),
             "data_saved": request.save_to_database,
             "session_id": request.session_id if request.save_to_database else None
         }
-        
+
         logger.info(f"억양 분석 완료: 전체 점수 {result.overall_score:.1f}, 데이터 저장: {request.save_to_database}")
-        
+
         return PronunciationResponse(
             success=True,
             message="억양 분석이 완료되었습니다.",
             data=response_data
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1663,7 +1797,7 @@ async def get_user_pronunciation_statistics(user_id: str):
         description="특정 세션의 음성 파일을 다운로드합니다.")
 async def download_pronunciation_audio(
     session_id: str,
-    audio_type: str = Path(..., description="음성 타입")
+    audio_type: str = Path(..., description="음성 타입 (user_original 또는 corrected_pronunciation)")
 ):
     """음성 파일 다운로드"""
     
@@ -1865,7 +1999,7 @@ async def get_supported_languages():
 @app.get("/api/scenarios/{language}", tags=["Info"],
         summary="언어별 시나리오 정보",
         description="특정 언어의 사용 가능한 시나리오 정보를 조회합니다.")
-async def get_language_scenarios(language: str):
+async def get_language_scenarios(language: str, SUPPORTED_LANGUAGES=None, LANGUAGE_NAMES=None):
     """언어별 시나리오 정보"""
     
     if language not in SUPPORTED_LANGUAGES:
@@ -1972,61 +2106,38 @@ async def create_voice_clone(request: VoiceCloneRequest):
         logger.error(f"Voice clone 생성 오류: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/pronunciation/personalized-correction", tags=["Voice Cloning"],
-         summary="개인화된 발음 교정",
-         description="사용자의 목소리로 완벽한 발음 교정 음성을 생성합니다.")
-async def generate_personalized_pronunciation(request: PersonalizedCorrectionRequest):
-    """사용자 목소리로 완벽한 발음 교정 음성 생성"""
-    
+@app.post("/api/pronunciation/personalized-correction", tags=["Pronunciation"],
+          summary="개인화된 발음 교정 (캐싱)",
+          description="세션 ID를 기반으로 저장된 교정 음성을 가져오거나, 없으면 새로 생성합니다.")
+async def generate_personalized_pronunciation(request: PersonalizedCorrectionRequest): # Depends(get_current_user) 삭제
+    """세션 ID 기반으로 교정 음성 조회 또는 생성"""
     try:
-        # 1. 먼저 사용자의 발음 분석
-        pronunciation_analysis = await pronunciation_service.analyze_pronunciation_from_base64(
-            audio_base64=request.user_audio_base64,
-            target_text=request.target_text,
-            user_level=request.user_level
+        # 요청 본문에서 user_id를 직접 가져옵니다.
+        user_id = request.user_id
+        if not user_id:
+            # 이 경우는 Pydantic 모델에서 필수로 지정했기 때문에 발생하지 않아야 합니다.
+            raise HTTPException(status_code=400, detail="user_id가 필요합니다.")
+
+        # 서비스 함수 호출 (user_id를 직접 전달)
+        result = await pronunciation_service.get_or_create_corrected_audio(
+            user_id=user_id,
+            session_id=request.session_id
         )
-        
-        # 2. 분석 결과를 딕셔너리로 변환
-        analysis_dict = {
-            "overall_score": pronunciation_analysis.overall_score,
-            "pitch_score": pronunciation_analysis.pitch_score,
-            "rhythm_score": pronunciation_analysis.rhythm_score,
-            "stress_score": pronunciation_analysis.stress_score,
-            "fluency_score": pronunciation_analysis.fluency_score,
-            "detailed_feedback": pronunciation_analysis.detailed_feedback,
-            "suggestions": pronunciation_analysis.suggestions
-        }
-        
-        # 3. 사용자 음색으로 교정된 발음 생성
-        correction_result = await voice_cloning_service.generate_corrected_pronunciation(
-            user_id=request.user_id,
-            target_text=request.target_text,
-            pronunciation_analysis=analysis_dict,
-            language=request.language
-        )
-        
-        if correction_result["success"]:
+
+        if result.get("success"):
             return {
                 "success": True,
-                "message": "개인화된 발음 교정이 완성되었습니다.",
+                "message": "교정 음성을 성공적으로 가져왔습니다.",
                 "data": {
-                    "original_analysis": analysis_dict,
-                    "corrected_audio_base64": correction_result["corrected_audio_base64"],
-                    "original_text": request.target_text,
-                    "corrected_text": correction_result.get("corrected_text"),
-                    "corrections_applied": correction_result.get("corrections_applied", []),
-                    "improvement_tips": pronunciation_analysis.suggestions
+                    "corrected_audio_base64": result.get("corrected_audio_base64"),
+                    "from_cache": result.get("cached", False)
                 }
             }
         else:
-            return {
-                "success": False,
-                "error": correction_result.get("error", "교정 음성 생성 실패"),
-                "original_analysis": analysis_dict
-            }
-        
+            raise HTTPException(status_code=500, detail=result.get("error", "교정 음성 처리 실패"))
+
     except Exception as e:
-        logger.error(f"개인화 발음 교정 오류: {e}")
+        logger.error(f"개인화 발음 교정 최종 오류: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # === WebSocket 실시간 통신 ===
@@ -2182,6 +2293,86 @@ async def general_exception_handler(request, exc):
             "timestamp": datetime.now().isoformat()
         }
     )
+
+@app.post("/api/grammar/start-session", tags=["Grammar"], summary="Start Grammar Practice Session")
+async def start_grammar_session(request: GrammarStartRequest):
+    """
+    Starts a new grammar practice session and returns the first question.
+    """
+    try:
+        result = await grammar_practice_service.start_grammar_session(
+            user_id=request.user_id,
+            language=request.language,
+            level=request.level
+        )
+        if result["success"]:
+            return result
+        else:
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to start session."))
+    except Exception as e:
+        logger.error(f"Error starting grammar session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/grammar/submit-answer", tags=["Grammar"], summary="Submit Grammar Answer")
+async def submit_grammar_answer(request: GrammarAnswerRequest):
+    """
+    Submits a grammar answer, gets feedback, and the next question.
+    """
+    try:
+        result = await grammar_practice_service.submit_grammar_answer(
+            session_id=request.session_id,
+            question_id=request.question_id,
+            user_answer=request.answer
+        )
+        if result["success"]:
+            return result
+        else:
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to submit answer."))
+    except Exception as e:
+        logger.error(f"Error submitting grammar answer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/grammar/analyze-voice")
+async def analyze_grammar_from_voice(request: GrammarVoiceRequest):
+    try:
+        # 1. 음성을 텍스트로 변환 (STT) - 변경 없음
+        transcribed_text = await stt_service.recognize_from_base64(
+            audio_base64=request.audio_base64,
+            language="en-US"
+        )
+        if not transcribed_text:
+            return {"success": False, "error": "음성을 인식할 수 없습니다."}
+
+        # 2. 텍스트의 문법 분석 및 교정 (OpenAI) - 변경 없음
+        feedback_data = await openai_service.get_grammar_feedback(
+            user_message=transcribed_text,
+            language=request.language,
+            level=request.level
+        )
+        corrected_text = feedback_data.get("corrected_text")
+        if not corrected_text:
+            return {"success": False, "error": "문법 분석에 실패했습니다."}
+
+        # 3. ▼▼▼ [삭제] 교정된 텍스트를 음성으로 변환하는 로직 전체 삭제 ▼▼▼
+        # corrected_audio_base64 = await tts_service.text_to_speech_base64(...)
+
+        # 4. ▼▼▼ [수정] 최종 결과에서 오디오 부분 삭제 ▼▼▼
+        return {
+            "success": True,
+            "data": {
+                "transcribed_text": transcribed_text,
+                "corrected_text": corrected_text,
+                "grammar_feedback": feedback_data.get("grammar_feedback", []),
+                "vocabulary_suggestions": feedback_data.get("vocabulary_suggestions", [])
+                # "corrected_audio_base64" 키 삭제
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"음성 문법 분석 중 오류: {e}")
+        return {"success": False, "error": str(e)}
+
 
 # === 서버 실행 ===
 
