@@ -19,10 +19,7 @@ jobs:
         EC2_HOST: ${{ secrets.EC2_HOST }}
         EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
         EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        ENV_FILE: ${{ secrets.ENV_FILE }}
       run: |
         echo "$EC2_SSH_KEY" > private_key.pem
         chmod 600 private_key.pem
