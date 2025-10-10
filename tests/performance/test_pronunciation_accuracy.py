@@ -10,6 +10,8 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 
 # 경로 설정 - test_current_system.py와 동일한 방식 사용
 current_dir = os.path.dirname(os.path.abspath(__file__))
