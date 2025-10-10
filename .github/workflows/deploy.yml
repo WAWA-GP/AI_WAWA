@@ -24,24 +24,22 @@ jobs:
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         SECRET_KEY: ${{ secrets.SECRET_KEY }}
       run: |
-        # SSH 키 설정
         echo "$EC2_SSH_KEY" > private_key.pem
         chmod 600 private_key.pem
         
-        # EC2에 배포
         ssh -o StrictHostKeyChecking=no -i private_key.pem $EC2_USERNAME@$EC2_HOST << 'ENDSSH'
           cd /var/www/language-learning-api
           
-          # Git pull
+          echo "📥 Pulling latest code..."
           git pull origin main
           
-          # 가상환경 활성화
+          echo "🔧 Activating virtual environment..."
           source .venv/bin/activate
           
-          # 의존성 업데이트
+          echo "📦 Installing dependencies..."
           pip install -r requirements.txt
           
-          # 환경변수 업데이트
+          echo "⚙️ Updating environment variables..."
           cat > .env << 'EOF'
         ENVIRONMENT=production
         DEBUG=false
@@ -56,18 +54,27 @@ jobs:
         CORS_ORIGINS=http://localhost:3000,http://13.48.248.250
         EOF
           
-          # Python 캐시 삭제
+          echo "🧹 Cleaning Python cache..."
           find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find . -name "*.pyc" -delete
           
-          # 서비스 재시작
+          echo "🔄 Restarting service..."
           sudo systemctl restart language-learning-api
           
-          # 상태 확인
-          sleep 3
+          echo "⏳ Waiting for server to start..."
+          for i in {1..30}; do
+            if curl -f http://localhost:8000/health 2>/dev/null; then
+              echo "✅ Server is healthy!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 1
+          done
+          
+          echo "🔍 Final health check..."
           curl -f http://localhost:8000/health || exit 1
           
-          echo "✅ Deployment completed successfully!"
+          echo "🎉 Deployment completed successfully!"
         ENDSSH
     
     - name: Cleanup
@@ -76,8 +83,8 @@ jobs:
     
     - name: Notify success
       if: success()
-      run: echo "🎉 Deployment successful!"
+      run: echo "🎉 Deployment successful to http://13.48.248.250"
     
     - name: Notify failure
       if: failure()
-      run: echo "❌ Deployment failed!"
+      run: echo "❌ Deployment failed! Check logs above."
