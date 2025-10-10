@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import openai
 from openai import AsyncOpenAI
-from .conversation_data_collector import data_collector
+from app.services.conversation_data_collector import data_collector
 
 logger = logging.getLogger(__name__)
 
