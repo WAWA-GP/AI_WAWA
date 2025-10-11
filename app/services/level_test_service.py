@@ -299,7 +299,7 @@ LISTENING_SCENARIOS = {
 }
 
 class QuickStartLanguageAPI:
-    """무료 API 및 로컬 파일을 활용한 언어 데이터 서비스"""
+    """무료 API들을 활용한 언어 데이터 서비스"""
 
     def __init__(self):
         # Wordnik API (무료 키 발급: https://developer.wordnik.com/)
@@ -311,50 +311,55 @@ class QuickStartLanguageAPI:
         self.is_initialized = False
 
     async def initialize_datasets(self):
-        """데이터셋 초기화 (네트워크 + 로컬 파일)"""
+        """무료 데이터셋 초기화 (비동기 방식으로 최적화)"""
         if self.is_initialized:
             return
 
-        logger.info("📥 어휘 데이터 로딩 중 (네트워크 + 로컬)...")
+        logger.info("📥 무료 어휘 데이터 다운로드 중...")
 
-        # 1. 네트워크에서 common_words 다운로드
+        # 공개 어휘 목록 URL들
         vocab_urls = {
             "common_words": "https://raw.githubusercontent.com/first20hours/google-10000-english/master/20k.txt",
+            "oxford_3000": "https://raw.githubusercontent.com/hackergrrl/oxford-3000/master/oxford-3000.json"
         }
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(vocab_urls["common_words"], timeout=10)
+
+        # 비동기 클라이언트를 생성
+        async with httpx.AsyncClient() as client:
+            # 각 URL에 대한 요청 작업을 리스트에 담습니다.
+            tasks = {name: client.get(url, timeout=10) for name, url in vocab_urls.items()}
+
+            # 모든 요청을 동시에 보내고 응답을 기다립니다.
+            responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+            # 응답 결과를 순서대로 처리
+            for (name, response) in zip(tasks.keys(), responses):
+                if isinstance(response, Exception):
+                    logger.error(f"❌ {name} 오류: {response}")
+                    continue
+
                 if response.status_code == 200:
-                    words = response.text.strip().split('\n')
-                    self.vocabulary_cache["common_words"] = [word.strip().lower() for word in words if word.strip()]
-                    logger.info(f"✅ common_words: {len(self.vocabulary_cache['common_words'])} 단어 (네트워크)")
+                    try:
+                        if name == "oxford_3000":
+                            self.vocabulary_cache[name] = response.json()
+                        else:
+                            words = response.text.strip().split('\n')
+                            self.vocabulary_cache[name] = [word.strip().lower() for word in words if word.strip()]
+
+                        logger.info(f"✅ {name}: {len(self.vocabulary_cache[name])} 단어")
+                    except Exception as e:
+                        logger.error(f"❌ {name} 데이터 처리 오류 : {e}")
                 else:
-                    logger.warning(f"❌ common_words 다운로드 실패 : {response.status_code}")
-        except Exception as e:
-            logger.error(f"❌ common_words 다운로드 중 오류 발생: {e}")
+                    logger.warning(f"❌ {name} 다운로드 실패 : {response.status_code}")
 
-
-        # 2. 로컬에서 oxford-3000.json 파일 로드 (URL 다운로드 코드를 완전히 제거)
-        try:
-            # 현재 파일(level_test_service.py)의 위치를 기준으로 파일 경로 계산
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            file_path = os.path.join(current_dir, '..', 'assets', 'oxford-3000.json')
-
-            with open(file_path, 'r', encoding='utf-8') as f:
-                words_list = json.load(f)
-                self.vocabulary_cache["oxford_3000"] = [word.strip().lower() for word in words_list if isinstance(word, str) and word.strip()]
-                logger.info(f"✅ oxford_3000: {len(self.vocabulary_cache['oxford_3000'])} 단어 (로컬 파일)")
-        except FileNotFoundError:
-            logger.error(f"❌ oxford_3000 로컬 파일 로딩 오류: 'app/assets/oxford-3000.json' 파일을 찾을 수 없습니다.")
-        except Exception as e:
-            logger.error(f"❌ oxford_3000 로컬 파일 처리 오류: {e}")
-
-
-        # common_words가 없을 경우를 대비한 fallback 로직
+        # 기본 어휘 목록이 없으면 하드코딩된 기본값 사용
         if not self.vocabulary_cache.get("common_words"):
             self.vocabulary_cache["common_words"] = [
                 "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
+                "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
+                "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
+                "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
                 "important", "beautiful", "difficult", "expensive", "interesting", "necessary",
+                "possible", "available", "comfortable", "dangerous", "educational", "professional"
             ]
             logger.info("📝 기본 어휘 목록 사용")
 
