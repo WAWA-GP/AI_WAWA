@@ -2,8 +2,6 @@ import os
 import base64
 import requests
 import aiohttp
-import re
-import asyncio
 import json
 import logging
 from typing import Optional, Dict, List
@@ -14,18 +12,12 @@ from app.services.pronunciation_data_service import pronunciation_data_service
 logger = logging.getLogger(__name__)
 
 class ElevenLabsVoiceCloningService:
-    """ElevenLabs API를 사용한 음성 복제 서비스"""
+    """ElevenLabs API를 사용한 음성 복제 서비스 (비동기 수정 버전)"""
 
     def __init__(self):
         self.api_key = os.getenv("ELEVENLABS_API_KEY")
         self.base_url = "https://api.elevenlabs.io/v1"
         self.data_service = pronunciation_data_service
-
-        self.user_voices = {}
-        self.rate_limits = {
-            "voice_creation": {"max": 1000, "period": 3600, "current": 0, "reset_time": None},
-            "tts_generation": {"max": 1000, "period": 3600, "current": 0, "reset_time": None}
-        }
 
         if not self.api_key:
             logger.warning("ELEVENLABS_API_KEY가 설정되지 않았습니다.")
@@ -36,27 +28,20 @@ class ElevenLabsVoiceCloningService:
             voice_sample_base64: str,
             voice_name: Optional[str] = None
     ) -> Dict:
-        """
-        사용자 음성 샘플로 voice clone 생성 (DB 우선 확인)
-        1. DB의 user_account 테이블에서 user_id로 저장된 voice_id를 찾습니다.
-        2. 있으면 즉시 반환합니다.
-        3. 없으면 ElevenLabs API로 목소리를 생성하고, 생성된 voice_id를 DB에 저장한 후 반환합니다.
-        """
+        """사용자 음성 샘플로 voice clone 생성 (DB 우선 확인)"""
         if not self.api_key:
             return {"success": False, "error": "ElevenLabs API 키가 설정되지 않았습니다."}
         if not self.data_service or not self.data_service.supabase:
             return {"success": False, "error": "데이터베이스 서비스에 연결할 수 없습니다."}
 
         try:
-            # 1. DB에서 기존 voice_id 확인 (테이블 이름을 user_account로 수정)
-            response = self.data_service.supabase.table("user_account").select("elevenlabs_voice_id").eq("user_id", user_id).execute()
+            response = await self.data_service.supabase.table("user_account").select("elevenlabs_voice_id").eq("user_id", user_id).execute()
 
             if response.data and response.data[0].get("elevenlabs_voice_id"):
                 voice_id = response.data[0]["elevenlabs_voice_id"]
                 logger.info(f"DB에서 기존 Voice ID 사용: {user_id} -> {voice_id}")
                 return {"success": True, "voice_id": voice_id, "cached": True}
 
-            # 2. DB에 ID가 없으면, ElevenLabs API로 목소리 생성
             logger.info(f"DB에 Voice ID 없음. {user_id}의 새 목소리를 생성합니다.")
 
             audio_data = base64.b64decode(voice_sample_base64)
@@ -77,8 +62,7 @@ class ElevenLabsVoiceCloningService:
             if not new_voice_id:
                 return {"success": False, "error": "ElevenLabs에서 Voice 생성에 실패했습니다."}
 
-            # 3. 생성된 새 voice_id를 DB에 저장 (테이블 이름을 user_account로 수정)
-            update_response = self.data_service.supabase.table("user_account").update({
+            update_response = await self.data_service.supabase.table("user_account").update({
                 "elevenlabs_voice_id": new_voice_id
             }).eq("user_id", user_id).execute()
 
@@ -93,27 +77,29 @@ class ElevenLabsVoiceCloningService:
             return {"success": False, "error": str(e)}
 
     async def _create_voice_via_api(self, user_id: str, audio_file_path: str, voice_name: str) -> Optional[str]:
-        """실제 ElevenLabs API 호출"""
+        """실제 ElevenLabs API 호출 (비동기 aiohttp 사용)"""
         url = f"{self.base_url}/voices/add"
         headers = {'xi-api-key': self.api_key}
 
         try:
-            with open(audio_file_path, 'rb') as audio_file:
-                files = {'files': (f'{user_id}_sample.wav', audio_file, 'audio/wav')}
-                data = {
-                    'name': voice_name,
-                    'description': f'Voice clone for user: {user_id}',
-                    'labels': json.dumps({'user_id': user_id, 'app': 'AI_WAWA'})
-                }
-                response = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+            async with aiohttp.ClientSession() as session:
+                with open(audio_file_path, 'rb') as audio_file:
+                    data = aiohttp.FormData()
+                    data.add_field('name', voice_name)
+                    data.add_field('description', f'Voice clone for user: {user_id}')
+                    data.add_field('labels', json.dumps({'user_id': user_id, 'app': 'AI_WAWA'}))
+                    data.add_field('files', audio_file, filename=f'{user_id}_sample.wav', content_type='audio/wav')
 
-                if response.status_code == 200:
-                    voice_id = response.json().get('voice_id')
-                    logger.info(f"ElevenLabs API Voice 생성 성공: {user_id} -> {voice_id}")
-                    return voice_id
-                else:
-                    logger.error(f"ElevenLabs API Voice 생성 실패: {response.status_code} - {response.text}")
-                    return None
+                    async with session.post(url, headers=headers, data=data, timeout=60) as response:
+                        if response.status == 200:
+                            response_json = await response.json()
+                            voice_id = response_json.get('voice_id')
+                            logger.info(f"ElevenLabs API Voice 생성 성공: {user_id} -> {voice_id}")
+                            return voice_id
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"ElevenLabs API Voice 생성 실패: {response.status} - {error_text}")
+                            return None
         except Exception as e:
             logger.error(f"API 호출 오류: {e}")
             return None
@@ -128,8 +114,7 @@ class ElevenLabsVoiceCloningService:
     ) -> Dict:
         """사용자 음색으로 교정된 발음 생성"""
         try:
-            # DB에서 voice_id를 직접 조회 (테이블 이름을 user_account로 수정)
-            response = self.data_service.supabase.table("user_account").select("elevenlabs_voice_id").eq("user_id", user_id).execute()
+            response = await self.data_service.supabase.table("user_account").select("elevenlabs_voice_id").eq("user_id", user_id).execute()
             if not (response.data and response.data[0].get("elevenlabs_voice_id")):
                 return {"success": False, "error": "사용자 목소리가 등록되지 않았습니다. 먼저 목소리를 등록해주세요."}
 
@@ -138,19 +123,11 @@ class ElevenLabsVoiceCloningService:
             corrected_text = self._generate_corrected_text(target_text, pronunciation_analysis)
 
             audio_result = await self._generate_speech_with_voice(
-                voice_id,
-                corrected_text,
-                language,
-                user_level,
-                pronunciation_analysis
+                voice_id, corrected_text, language, user_level, pronunciation_analysis
             )
 
             if audio_result["success"]:
-                return {
-                    "success": True,
-                    "corrected_audio_base64": audio_result["audio_base64"],
-                    "voice_id": voice_id
-                }
+                return {"success": True, "corrected_audio_base64": audio_result["audio_base64"], "voice_id": voice_id}
             else:
                 return audio_result
 
