@@ -856,68 +856,53 @@ async def start_mini_test_endpoint(request: dict):
 
 
 @app.post("/api/user/complete-assessment", tags=["User"],
-         summary="레벨 평가 완료",
-         description="레벨 테스트 완료 후 개인화된 학습 경로를 제공합니다.")
+          summary="레벨 평가 완료",
+          description="레벨 테스트 완료 후 개인화된 학습 경로를 제공합니다.")
 async def complete_assessment(
-    user_id: str = Query(..., description="사용자 ID"),
-    session_id: str = Query(..., description="테스트 세션 ID")
+        user_id: str = Query(..., description="사용자 ID"),
+        session_id: str = Query(..., description="테스트 세션 ID")
 ):
-    """레벨 테스트 완료 후 개인화된 학습 경로 제공"""
+    """레벨 테스트를 공식적으로 완료 처리하고 최종 결과를 생성하여 반환합니다."""
     try:
-        # 레벨 테스트 결과 조회
-        session_status = level_test_service.get_session_status(session_id)
-        
-        if not session_status.get("exists") or not session_status.get("completed"):
-            raise HTTPException(status_code=400, detail="완료되지 않은 테스트입니다.")
-        
-        # 세션에서 최종 결과 가져오기
-        session = level_test_service.active_sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-        
-        # 사용자 프로필 생성
-        final_result = session.get("final_result", {})
-        user_level = final_result.get("final_level", "A2")
-        weak_areas = final_result.get("areas_to_improve", [])
-        
-        # 개인화된 학습 경로 생성
-        learning_path = await generate_personalized_learning_path(user_level, weak_areas)
-        
-        # 사용자 프로필 저장 (실제로는 데이터베이스에 저장)
+        # 이 함수는 내부적으로 답변 갯수를 확인하고, 부족하면 ValueError를 발생시킵니다.
+        final_result = await level_test_service.finalize_test_session(session_id)
+
+        # 사용자 프로필 데이터는 final_result에 이미 포함되어 있습니다.
         user_profile = {
             "user_id": user_id,
-            "assessed_level": user_level,
+            "assessed_level": final_result.get("final_level", "A2"),
             "skill_breakdown": final_result.get("skill_breakdown", {}),
             "strengths": final_result.get("strengths", []),
-            "areas_to_improve": weak_areas,
-            "learning_path": learning_path,
-            "assessment_date": datetime.now().isoformat(),
-            "recommended_daily_time": "20-30 minutes",
-            "next_assessment_due": (datetime.now() + timedelta(days=30)).isoformat()
+            "areas_to_improve": final_result.get("areas_to_improve", []),
+            "assessment_date": datetime.now().isoformat()
         }
-        
-        logger.info(f"사용자 평가 완료: {user_id} - 레벨: {user_level}")
-        
+
+        # 앱에서 필요한 추가 학습 정보 생성
+        learning_plan = {
+            "first_lesson": await get_first_lesson_for_level(user_profile["assessed_level"], user_profile["areas_to_improve"]),
+            "daily_goals": generate_daily_goals(user_profile["assessed_level"]),
+            "recommendations": final_result.get("recommendations", []),
+            "next_steps": final_result.get("next_steps", [])
+        }
+
+        logger.info(f"사용자 평가 완료: {user_id} - 레벨: {user_profile['assessed_level']}")
+
+        # 최종 응답 데이터 구성
         return {
             "success": True,
-            "message": f"축하합니다! 당신의 레벨은 {user_level}입니다.",
+            "message": f"축하합니다! 당신의 레벨은 {user_profile['assessed_level']}입니다.",
             "data": {
                 "user_profile": user_profile,
-                "assessment_results": final_result,
-                "first_lesson": await get_first_lesson_for_level(user_level, weak_areas),
-                "learning_plan": {
-                    "daily_goals": generate_daily_goals(user_level),
-                    "weekly_plan": generate_weekly_plan(user_level, weak_areas),
-                    "milestone_targets": generate_milestones(user_level)
-                }
+                **learning_plan
             }
         }
-        
-    except HTTPException:
-        raise
+
+    except ValueError as e:
+        logger.warning(f"평가 완료 실패 (400): {session_id} - {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"평가 완료 처리 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"평가 완료 처리 중 오류: {str(e)}")
+        logger.error(f"평가 완료 처리 중 심각한 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"평가 완료 처리 중 서버 오류가 발생했습니다: {str(e)}")
     
 # === 대화 관리 API (데이터 수집 포함) ===
 
@@ -1130,16 +1115,19 @@ async def send_voice_message(request: VoiceMessageRequest):
             translate=request.translate
         )
 
-        # 기존 텍스트 처리 로직 재사용
-        response = await send_text_message(text_request)
+        # 1. send_text_message가 반환하는 ConversationResponse 객체를 받습니다.
+        response_model = await send_text_message(text_request)
 
-        # 음성 인식 결과 추가 (JSON 응답으로 변환하여 수정)
-        response_body = json.loads(response.body)
-        if "data" in response_body and response_body["data"] is not None:
-            response_body["data"]["recognized_text"] = recognized_text
-            response_body["data"]["original_audio"] = True
+        # 2. Pydantic 모델을 딕셔너리로 변환하여 수정합니다.
+        response_dict = response_model.model_dump()
 
-        return JSONResponse(content=response_body)
+        # 3. 'data' 필드에 음성 인식 결과를 추가합니다.
+        if "data" in response_dict and response_dict["data"] is not None:
+            response_dict["data"]["recognized_text"] = recognized_text
+            response_dict["data"]["original_audio"] = True
+
+        # 4. 수정된 딕셔너리를 JSON 응답으로 반환합니다.
+        return JSONResponse(content=response_dict)
 
     except HTTPException:
         raise
