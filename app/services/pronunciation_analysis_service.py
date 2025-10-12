@@ -7,10 +7,12 @@
 """
 
 import asyncio
+import difflib
 import logging
 import base64
 from typing import Dict, List, Optional
 from datetime import datetime
+from app.services.openai_service import openai_service
 from app.services.pronunciation_data_service import pronunciation_data_service
 import sys
 import os
@@ -138,26 +140,39 @@ class PronunciationAnalysisServiceWrapper:
             target_text: str,
             user_level: str = "B1",
             language: str = "en",
-            user_id: str = None,  # 추가
-            session_id: str = None  # 추가
+            user_id: str = None,
+            session_id: str = None
     ) -> PronunciationScore:
-        """Base64 오디오에서 발음 분석 - 다국어 지원 및 데이터 저장"""
+        """Base64 오디오에서 발음 분석 (음성 인식 검증 추가)"""
 
         if not self.is_initialized:
             await self.initialize()
 
-        # 지원 언어 확인
-        if language not in ["ko", "en", "ja", "zh", "fr"]:
+        if language != "en":
             logger.warning(f"지원하지 않는 언어: {language}, 영어로 분석")
             language = "en"
 
         try:
-            # 1. 발음 분석 수행
+            # --- 1. Whisper로 음성을 텍스트로 변환 ---
+            transcribed_text = await openai_service.transcribe_audio_base64(audio_base64, language)
+            if not transcribed_text:
+                raise Exception("음성을 인식할 수 없습니다. 더 크고 명확하게 발음해주세요.")
+
+            # --- 2. 원본 문장과 인식된 텍스트의 유사도 검사 ---
+            similarity = difflib.SequenceMatcher(None, target_text.lower(), transcribed_text.lower()).ratio()
+            logger.info(f"발음 유사도: {similarity:.2f} (목표: '{target_text}', 인식: '{transcribed_text}')")
+
+            # 유사도가 60% 미만이면 분석을 진행하지 않고 오류 반환
+            if similarity < 0.6:
+                raise Exception("문장과 다른 발음이 인식되었습니다. 다시 시도해주세요.")
+
+            # --- 3. 유사도 검사를 통과하면 핵심 분석 서비스 호출 ---
+            # 이제 시뮬레이션이 아닌, 실제 인식된 텍스트를 함께 전달합니다.
             result = await self.core_service.analyze_pronunciation_from_base64(
-                audio_base64, target_text, user_level, language
+                audio_base64, target_text, transcribed_text, user_level, language
             )
 
-            # 2. 데이터 저장 (user_id와 session_id가 제공된 경우)
+            # 4. 데이터 저장 (기존과 동일)
             if user_id and session_id and self.data_service.supabase:
                 await self._save_pronunciation_data(
                     user_id=user_id,
@@ -173,7 +188,8 @@ class PronunciationAnalysisServiceWrapper:
 
         except Exception as e:
             logger.error(f"❌ 발음 분석 오류 ({language}): {e}")
-            return self._create_fallback_score(language)
+            # [수정] 오류 발생 시, 일반적인 fallback 점수가 아닌 예외를 발생시켜 UI에 메시지 전달
+            raise e
 
     async def _save_pronunciation_data(
             self,
