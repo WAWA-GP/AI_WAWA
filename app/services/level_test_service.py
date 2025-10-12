@@ -1314,22 +1314,12 @@ class LevelTestService:
         return question
 
     async def submit_answer(self, session_id: str, question_id: str, answer: str) -> Dict:
-        """답변 제출 및 처리"""
-
+        """답변 제출 및 처리 (테스트 종료 로직 제거)"""
         try:
             if session_id not in self.active_sessions:
-                return {
-                    "success": False,
-                    "error": "유효하지 않은 세션입니다."
-                }
+                return {"success": False, "error": "유효하지 않은 세션입니다."}
 
             session = self.active_sessions[session_id]
-
-            if session["completed"]:
-                return {
-                    "success": False,
-                    "error": "이미 완료된 테스트입니다."
-                }
 
             # 답변 평가
             evaluation = await self._evaluate_answer(question_id, answer, session)
@@ -1343,48 +1333,35 @@ class LevelTestService:
             # 레벨 추정 업데이트
             await self._update_level_estimate(session)
 
-            # 테스트 완료 조건 확인
-            if (session["current_question"] >= session["total_questions"]):
-
-                final_result = await self._complete_test(session)
-                session["completed"] = True
-                session["final_result"] = final_result
-
-                return {
-                    "success": True,
-                    "status": "completed",
-                    "final_result": final_result
-                }
-
+            next_skill = ""
+            if session.get("is_mini_test"):
+                current_server_question_index = session["current_question"]
+                skills_order = session["mini_test_skills_order"]
+                next_skill_index = (current_server_question_index - 1) % len(skills_order)
+                next_skill = skills_order[next_skill_index]
             else:
-                # ▼▼▼ [수정 4/4] 다음 문제 생성 시, 중복 방지 래퍼 함수를 호출 ▼▼▼
-                next_skill = ""
-                if session.get("is_mini_test"):
-                    next_skill = session["mini_test_skills_order"][session["current_question"]]
-                else:
-                    next_skill = self._determine_next_skill(session)
+                next_skill = self._determine_next_skill(session)
 
-                next_level = session["estimated_level"]
-                # 기존 _generate_question 대신 _generate_unique_question 호출
-                next_question = await self._generate_unique_question(session, next_skill, next_level)
+            next_level = session["estimated_level"]
+            next_question = await self._generate_unique_question(session, next_skill, next_level)
 
-                session["current_question_data"] = next_question
+            session["current_question_data"] = next_question
 
-                return {
-                    "success": True,
-                    "status": "continue",
-                    "next_question": next_question,
-                    "progress": {
-                        "completed": session["current_question"],
-                        "total": session["total_questions"],
-                        "estimated_level": session["estimated_level"],
-                        "confidence": round(session["confidence"], 2)
-                    }
+            return {
+                "success": True,
+                "status": "continue",
+                "next_question": next_question,
+                "progress": {
+                    "completed": session["current_question"],
+                    "total": session["total_questions"],
+                    "estimated_level": session["estimated_level"],
+                    "confidence": round(session["confidence"], 2)
                 }
+            }
 
         except Exception as e:
             logger.error(f"답변 처리 오류: {e}")
-            return { "success": False, "error": f"답변 처리 중 오류가 발생했습니다: {str(e)}" }
+            return {"success": False, "error": f"답변 처리 중 오류가 발생했습니다: {str(e)}"}
 
     async def _evaluate_answer(self, question_id: str, answer: str, session: Dict) -> Dict:
         """답변 평가 (전면 수정)"""
@@ -1513,6 +1490,34 @@ class LevelTestService:
                 return skills[question_num % 4]
         except:
             return "vocabulary"
+
+    async def finalize_test_session(self, session_id: str) -> Dict:
+        """
+        외부 API 라우터에서 호출하여 테스트를 완료하고 최종 결과를 생성하는 함수.
+        """
+        if session_id not in self.active_sessions:
+            logger.error(f"완료 시도: 존재하지 않는 세션 ID: {session_id}")
+            raise ValueError("유효하지 않은 세션입니다.")
+
+        session = self.active_sessions[session_id]
+
+        # 서버에 기록된 답변 제출 횟수가 총 문제 수보다 적으면 오류 발생
+        if session["current_question"] < session["total_questions"]:
+            logger.warning(f"미완료 테스트 완료 시도: {session_id}. "
+                           f"답변 수: {session['current_question']}, 총 문제 수: {session['total_questions']}")
+            raise ValueError("완료되지 않은 테스트입니다.") # ◀◀◀ 바로 이 오류 메시지입니다.
+
+        # 이미 결과가 있다면 다시 계산하지 않고 바로 반환
+        if session.get("completed"):
+            logger.info(f"이미 완료된 테스트 결과 반환: {session_id}")
+            return session["final_result"]
+
+        # 위 검증을 통과하면, 비로소 최종 결과를 계산하고 세션을 완료 상태로 변경
+        final_result = await self._complete_test(session)
+        session["completed"] = True
+        session["final_result"] = final_result
+
+        return final_result
 
     async def _complete_test(self, session: Dict) -> Dict:
         """테스트 완료 및 최종 결과 생성"""
@@ -1895,7 +1900,7 @@ class GrammarPracticeService:
         }
 
     async def submit_grammar_answer(self, session_id: str, question_id: str, user_answer: str) -> Dict:
-        """Submits an answer and gets the next question."""
+        """답변을 제출하고, 상세한 피드백과 함께 다음 문제를 받습니다."""
         if session_id not in self.active_sessions:
             return {"success": False, "error": "Session not found."}
 
@@ -1911,25 +1916,37 @@ class GrammarPracticeService:
             session["score"] += 1
         session["question_count"] += 1
 
-        # [DEBUG] Generate the next question with a new random word
+        # --- [핵심 수정] 상세 해설 및 정답 데이터 생성 ---
+        grammar_point = current_question.get("grammar_point", "문법 포인트")
+        correct_answer_key = current_question.get("correct_answer")
+        correct_answer_text = current_question.get("options", {}).get(correct_answer_key, "")
+
+        template_sentence = current_question.get("question", "_____")
+        # 정답 단어에 **를 붙여서 강조 표시가 포함된 문장 생성
+        completed_sentence_with_highlight = template_sentence.replace("_____", f"**{correct_answer_text}**")
+
+        detailed_explanation = (
+            f"이 문제는 **'{grammar_point}'** 규칙에 대한 질문입니다.\n\n"
+            f"'{completed_sentence_with_highlight}'와 같이 문장을 완성하는 것이 문법적으로 올바릅니다.\n\n"
+            f"따라서 정답은 **{correct_answer_key} ({correct_answer_text})** 입니다."
+        )
+        # --- 수정 완료 ---
+
+        # 다음 문제 생성 로직 (기존과 동일)
         level_words = await self.question_generator._get_level_words(session["level"])
-        logger.info(f"[DEBUG-NEXT] Found {len(level_words)} words for level {session['level']}.")
-
         next_word = random.choice(level_words) if level_words else "practice"
-        logger.info(f"[DEBUG-NEXT] Randomly selected next word: '{next_word}'")
-
         next_question = await self.question_generator._create_grammar_question(next_word, session["level"])
-        logger.info(f"[DEBUG-NEXT] Generated next question: \"{next_question.get('question')}\"")
-
         session["current_question"] = next_question
 
         logger.info(f"Answer submitted for session {session_id}. Correct: {is_correct}")
 
+        # ▼▼▼ [핵심 수정] 반환하는 JSON 객체 수정 ▼▼▼
         return {
             "success": True,
             "is_correct": is_correct,
-            "explanation": current_question.get("explanation", "No explanation available."),
-            "correct_answer": current_question.get("correct_answer"),
+            "explanation": detailed_explanation,
+            "correct_answer_key": correct_answer_key,
+            "corrected_text": completed_sentence_with_highlight, # plain 대신 highlight 버전으로 변경
             "next_question": next_question
         }
 
