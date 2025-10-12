@@ -1,19 +1,18 @@
 # services/pronunciation_data_service.py
-
-import json
 import base64
+import json
+import logging
 import wave
 import io
-import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from supabase import create_client, Client
+from supabase import create_client, AsyncClient
 import os
 
 logger = logging.getLogger(__name__)
 
 class PronunciationDataService:
-    """발음 분석 데이터를 Supabase에 저장하는 서비스"""
+    """발음 분석 데이터를 Supabase에 저장하는 서비스 (비동기 최종 수정)"""
 
     def __init__(self):
         self.supabase_url = os.getenv("SUPABASE_URL")
@@ -24,137 +23,63 @@ class PronunciationDataService:
             self.supabase = None
         else:
             try:
-                self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-                logger.info("🎤 발음 데이터 서비스 초기화 완료")
+                # ▼▼▼ [핵심 수정] create_client 대신 AsyncClient를 직접 호출하여 비동기 클라이언트를 명시적으로 생성합니다. ▼▼▼
+                self.supabase = AsyncClient(self.supabase_url, self.supabase_key)
+                logger.info("🎤 발음 데이터 서비스 초기화 완료 (AsyncClient 직접 생성)")
             except Exception as e:
                 logger.error(f"Supabase 초기화 오류: {e}")
                 self.supabase = None
 
     async def create_pronunciation_session(
-            self,
-            user_id: str,
-            session_id: str,
-            target_text: str,
-            language: str = "en",
-            user_level: str = "B1"
-    ) -> Optional[str]:
-        """새로운 발음 세션 생성"""
-
-        if not self.supabase:
-            logger.warning("Supabase가 초기화되지 않음")
-            return None
-
+            self, user_id: str, session_id: str, target_text: str,
+            language: str = "en", user_level: str = "B1"
+    ) -> Optional[int]:
+        if not self.supabase: return None
         try:
             session_data = {
-                'user_id': user_id,
-                'session_id': session_id,
-                'target_text': target_text,
-                'language': language,
-                'user_level': user_level,
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat()
+                'user_id': user_id, 'session_id': session_id, 'target_text': target_text,
+                'language': language, 'user_level': user_level
             }
-
-            response = self.supabase.table('pronunciation_sessions').insert(session_data).execute()
-
-            if response.data:
-                pronunciation_session_id = response.data[0]['id']
-                logger.info(f"🎯 발음 세션 생성: {session_id} -> {pronunciation_session_id}")
-                return pronunciation_session_id
-            else:
-                logger.error("발음 세션 생성 실패")
-                return None
-
+            response = await self.supabase.table('pronunciation_sessions').insert(session_data).execute()
+            return response.data[0]['id'] if response.data else None
         except Exception as e:
             logger.error(f"발음 세션 생성 오류: {e}")
             return None
 
     async def save_user_audio(
-            self,
-            pronunciation_session_id: str,
-            user_audio_base64: str,
-            file_format: str = "wav"
+            self, pronunciation_session_id: int, user_audio_base64: str, file_format: str = "wav"
     ) -> bool:
-        """사용자 원본 음성 저장"""
-
-        if not self.supabase:
-            return False
-
+        if not self.supabase: return False
         try:
-            # 오디오 메타데이터 추출
-            duration, file_size = self._extract_audio_metadata(user_audio_base64)
-
             audio_data = {
-                'pronunciation_session_id': pronunciation_session_id,
-                'audio_type': 'user_original',
-                'audio_data_base64': user_audio_base64,
-                'file_format': file_format,
-                'duration_seconds': duration,
-                'file_size_bytes': file_size,
-                'created_at': datetime.now().isoformat()
+                'pronunciation_session_id': pronunciation_session_id, 'audio_type': 'user_original',
+                'audio_data_base64': user_audio_base64, 'file_format': file_format
             }
-
-            response = self.supabase.table('pronunciation_audio_files').insert(audio_data).execute()
-
-            if response.data:
-                logger.info(f"🎵 사용자 음성 저장 완료: {pronunciation_session_id}")
-                return True
-            else:
-                logger.error("사용자 음성 저장 실패")
-                return False
-
+            await self.supabase.table('pronunciation_audio_files').insert(audio_data).execute()
+            return True
         except Exception as e:
             logger.error(f"사용자 음성 저장 오류: {e}")
             return False
 
     async def save_corrected_audio(
-            self,
-            pronunciation_session_id: str,
-            corrected_audio_base64: str,
-            file_format: str = "wav"
+            self, pronunciation_session_id: int, corrected_audio_base64: str, file_format: str = "wav"
     ) -> bool:
-        """교정된 음성 저장"""
-
-        if not self.supabase:
-            return False
-
+        if not self.supabase: return False
         try:
-            # 오디오 메타데이터 추출
-            duration, file_size = self._extract_audio_metadata(corrected_audio_base64)
-
             audio_data = {
-                'pronunciation_session_id': pronunciation_session_id,
-                'audio_type': 'corrected_pronunciation',
-                'audio_data_base64': corrected_audio_base64,
-                'file_format': file_format,
-                'duration_seconds': duration,
-                'file_size_bytes': file_size,
-                'created_at': datetime.now().isoformat()
+                'pronunciation_session_id': pronunciation_session_id, 'audio_type': 'corrected_pronunciation',
+                'audio_data_base64': corrected_audio_base64, 'file_format': file_format
             }
-
-            response = self.supabase.table('pronunciation_audio_files').insert(audio_data).execute()
-
-            if response.data:
-                logger.info(f"🔧 교정 음성 저장 완료: {pronunciation_session_id}")
-                return True
-            else:
-                logger.error("교정 음성 저장 실패")
-                return False
-
+            await self.supabase.table('pronunciation_audio_files').insert(audio_data).execute()
+            return True
         except Exception as e:
             logger.error(f"교정 음성 저장 오류: {e}")
             return False
 
     async def save_analysis_result(
-            self,
-            pronunciation_session_id: str,
-            analysis_result: Dict[str, Any]
+            self, pronunciation_session_id: int, analysis_result: Dict[str, Any]
     ) -> bool:
-        """발음 분석 결과 저장"""
-
-        if not self.supabase:
-            return False
-
+        if not self.supabase: return False
         try:
             analysis_data = {
                 'pronunciation_session_id': pronunciation_session_id,
@@ -164,114 +89,35 @@ class PronunciationDataService:
                 'stress_score': analysis_result.get('stress_score', 0.0),
                 'fluency_score': analysis_result.get('fluency_score', 0.0),
                 'phoneme_scores': json.dumps(analysis_result.get('phoneme_scores', {})),
-                'detailed_feedback': json.dumps(analysis_result.get('detailed_feedback', [])),
-                'suggestions': json.dumps(analysis_result.get('suggestions', [])),
-                'confidence': analysis_result.get('confidence', 0.0),
-                'created_at': datetime.now().isoformat()
+                'detailed_feedback': analysis_result.get('detailed_feedback', []),
+                'suggestions': analysis_result.get('suggestions', []),
+                'confidence': analysis_result.get('confidence', 0.0)
             }
-
-            response = self.supabase.table('pronunciation_analysis_results').insert(analysis_data).execute()
-
-            if response.data:
-                logger.info(f"📊 분석 결과 저장 완료: {pronunciation_session_id}")
-                return True
-            else:
-                logger.error("분석 결과 저장 실패")
-                return False
-
+            await self.supabase.table('pronunciation_analysis_results').insert(analysis_data).execute()
+            return True
         except Exception as e:
             logger.error(f"분석 결과 저장 오류: {e}")
             return False
 
-    async def get_user_pronunciation_history(
-            self,
-            user_id: str,
-            limit: int = 50
-    ) -> List[Dict]:
-        """사용자 발음 연습 기록 조회"""
-
-        if not self.supabase:
-            return []
-
+    async def get_pronunciation_session_details(self, session_id: str) -> Optional[Dict]:
+        if not self.supabase: return None
         try:
-            response = self.supabase.table('pronunciation_sessions').select(
-                '''
-                id,
-                session_id,
-                target_text,
-                language,
-                user_level,
-                created_at,
-                pronunciation_analysis_results (
-                    overall_score,
-                    pitch_score,
-                    rhythm_score,
-                    stress_score,
-                    fluency_score,
-                    confidence
-                ),
-                pronunciation_audio_files (
-                    audio_type,
-                    duration_seconds,
-                    file_size_bytes
-                )
-                '''
-            ).eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute()
-
-            return response.data if response.data else []
-
-        except Exception as e:
-            logger.error(f"사용자 기록 조회 오류: {e}")
-            return []
-
-    async def get_pronunciation_session_details(
-            self,
-            session_id: str
-    ) -> Optional[Dict]:
-        """특정 세션의 상세 정보 조회"""
-
-        if not self.supabase:
-            return None
-
-        try:
-            response = self.supabase.table('pronunciation_sessions').select(
-                '''
-                *,
-                pronunciation_analysis_results (*),
-                pronunciation_audio_files (*)
-                '''
-            ).eq('session_id', session_id).execute()
-
-            if response.data:
-                return response.data[0]
-            else:
-                return None
-
+            response = await self.supabase.table('pronunciation_sessions').select(
+                '*, pronunciation_analysis_results(*), pronunciation_audio_files(*)'
+            ).eq('session_id', session_id).maybe_single().execute()
+            return response.data if response.data else None
         except Exception as e:
             logger.error(f"세션 상세 조회 오류: {e}")
             return None
 
-    async def get_audio_files(
-            self,
-            pronunciation_session_id: str
-    ) -> Dict[str, str]:
-        """세션의 음성 파일들 조회"""
-
-        if not self.supabase:
-            return {}
-
+    async def get_audio_files(self, pronunciation_session_id: int) -> Dict[str, str]:
+        if not self.supabase: return {}
         try:
-            response = self.supabase.table('pronunciation_audio_files').select(
+            response = await self.supabase.table('pronunciation_audio_files').select(
                 'audio_type, audio_data_base64'
             ).eq('pronunciation_session_id', pronunciation_session_id).execute()
-
-            audio_files = {}
-            if response.data:
-                for file_data in response.data:
-                    audio_files[file_data['audio_type']] = file_data['audio_data_base64']
-
+            audio_files = {file_data['audio_type']: file_data['audio_data_base64'] for file_data in response.data}
             return audio_files
-
         except Exception as e:
             logger.error(f"음성 파일 조회 오류: {e}")
             return {}
