@@ -15,7 +15,6 @@ import httpx
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import self
 from openai import OpenAI
 import os
 
