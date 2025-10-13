@@ -1,87 +1,61 @@
-name: Deploy to AWS EC2
+name: Deploy AI Server to EC2
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Deploy to EC2
-      env:
-        EC2_HOST: ${{ secrets.EC2_HOST }}
-        EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-        EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-        ENV_FILE: ${{ secrets.ENV_FILE }}
-      run: |
-        echo "$EC2_SSH_KEY" > private_key.pem
-        chmod 600 private_key.pem
-        
-        ssh -o StrictHostKeyChecking=no -i private_key.pem $EC2_USERNAME@$EC2_HOST << 'ENDSSH'
-          cd /var/www/language-learning-api
-          
-          echo "📥 Pulling latest code..."
-          git pull origin main
-          
-          echo "🔧 Activating virtual environment..."
-          source .venv/bin/activate
-          
-          echo "📦 Installing dependencies..."
-          pip install -r requirements.txt
-          
-          echo "⚙️ Updating environment variables..."
-          cat > .env << 'EOF'
-        ENVIRONMENT=production
-        DEBUG=false
-        HOST=0.0.0.0
-        PORT=8000
-        
-        OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-        SUPABASE_URL=${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
-        SECRET_KEY=${{ secrets.SECRET_KEY }}
-        
-        CORS_ORIGINS=http://localhost:3000,http://13.48.248.250
-        EOF
-          
-          echo "🧹 Cleaning Python cache..."
-          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          find . -name "*.pyc" -delete
-          
-          echo "🔄 Restarting service..."
-          sudo systemctl restart language-learning-api
-          
-          echo "⏳ Waiting for server to start..."
-          for i in {1..30}; do
-            if curl -f http://localhost:8000/health 2>/dev/null; then
-              echo "✅ Server is healthy!"
-              break
-            fi
-            echo "Waiting... ($i/30)"
-            sleep 1
-          done
-          
-          echo "🔍 Final health check..."
-          curl -f http://localhost:8000/health || exit 1
-          
-          echo "🎉 Deployment completed successfully!"
-        ENDSSH
-    
-    - name: Cleanup
-      if: always()
-      run: rm -f private_key.pem
-    
-    - name: Notify success
-      if: success()
-      run: echo "🎉 Deployment successful to http://13.48.248.250"
-    
-    - name: Notify failure
-      if: failure()
-      run: echo "❌ Deployment failed! Check logs above."
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
+          chmod 600 private_key.pem
+      
+      - name: Deploy to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.EC2_IP }} << 'ENDSSH'
+            # AI 서버 디렉토리로 이동
+            cd /app/ai_server
+            
+            # Git pull
+            git pull origin main
+            
+            # .env 파일 업데이트
+            cd app
+            cat > .env << 'EOF'
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          SECRET_KEY=${{ secrets.SECRET_KEY }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
+          ENVIRONMENT=production
+          DEBUG=false
+          HOST=0.0.0.0
+          PORT=8000
+          OPENAI_MODEL=gpt-4
+          OPENAI_TEMPERATURE=0.7
+          OPENAI_MAX_TOKENS=1000
+          LOG_LEVEL=INFO
+          DATABASE_URL=sqlite:///./language_learning.db
+          EOF
+            
+            # 가상환경 활성화 및 패키지 업데이트
+            cd /app/ai_server
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt || true
+            
+            # 서비스 재시작
+            sudo systemctl restart ai.service
+            
+            # 서비스 상태 확인
+            sleep 3
+            sudo systemctl status ai.service --no-pager
+          ENDSSH
