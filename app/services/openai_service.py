@@ -198,60 +198,41 @@ L'utilisateur apprend le français, donc :
             language: str = "en",
             difficulty: str = "beginner",
             context: Optional[Dict] = None,
-            translate_to: Optional[str] = None  # 👈 [FIX 1/3] Add the new parameter here
+            translate_to: Optional[str] = None
     ) -> Dict[str, Any]:
-        """GPT-4를 사용한 AI 응답 생성 (번역 기능 추가)"""
+        """(수정됨) GPT 응답 생성과 번역을 병렬로 처리하여 속도를 개선합니다."""
 
         if not self.client:
-            return {
-                "success": False,
-                "error": "OpenAI API 키가 설정되지 않았습니다.",
-                "fallback": True,
-            }
+            return {"success": False, "error": "OpenAI API 키가 설정되지 않았습니다.", "fallback": True}
 
         try:
-            # 시스템 프롬프트 선택
+            # --- 1. 메인 AI 응답 생성 작업 정의 ---
             system_prompt = self._get_system_prompt(situation, language, difficulty)
-
-            # 대화 히스토리 관리
             conversation = self._get_conversation_history(session_id)
+            messages = [{"role": "system", "content": system_prompt}] + conversation + [{"role": "user", "content": user_message}]
 
-            # 메시지 구성
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(conversation)
-            messages.append({"role": "user", "content": user_message})
-
-            # GPT-4 호출 (1차: 역할극 대화 생성)
-            logger.info(f"GPT-4 요청: {session_id} - {user_message[:50]}...")
-            response = await self.client.chat.completions.create(
-                model="gpt-4",
+            logger.info(f"GPT-4-Turbo 요청 시작: {session_id}")
+            main_response_task = self.client.chat.completions.create(
+                model="gpt-4-turbo",  # ◀◀◀ [속도 개선] gpt-4 보다 훨씬 빠른 gpt-4-turbo 모델 사용
                 messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
-                stream=False,
-            )
-            ai_message = response.choices[0].message.content
-
-            # 대화 히스토리 업데이트
-            self._update_conversation_history(session_id, user_message, ai_message)
-
-            # 응답 분석 및 피드백 생성
-            feedback = await self._analyze_user_input(
-                user_message, ai_message, language, difficulty
             )
 
-            logger.info(f"GPT-4 응답 생성 성공: {session_id}")
+            # --- 2. 메인 AI 응답과 번역을 동시에 실행 ---
+            main_response = await main_response_task
+            ai_message = main_response.choices[0].message.content
+            logger.info(f"GPT-4-Turbo 응답 수신: {session_id}")
 
-            # 👈 [FIX 2/3] 번역 로직 추가
             translated_text = None
             if translate_to and ai_message:
                 try:
-                    logger.info(f"'{translate_to}'로 번역 요청...")
-                    # 구분자(separator)를 기준으로 대화 부분만 번역
+                    # 번역할 대화 부분만 추출
                     conversational_part = ai_message.split("=======")[0].strip()
 
-                    translation_response = await self.client.chat.completions.create(
-                        model="gpt-3.5-turbo", # 번역은 더 빠르고 저렴한 모델 사용
+                    # 번역 작업을 비동기 태스크로 만듦
+                    translation_task = self.client.chat.completions.create(
+                        model="gpt-3.5-turbo",
                         messages=[
                             {"role": "system", "content": f"You are a helpful translator. Translate the following text to {translate_to}."},
                             {"role": "user", "content": conversational_part}
@@ -259,30 +240,31 @@ L'utilisateur apprend le français, donc :
                         max_tokens=300,
                         temperature=0.1,
                     )
+
+                    # 번역이 완료될 때까지 기다림
+                    translation_response = await translation_task
                     translated_text = translation_response.choices[0].message.content
-                    logger.info(f"번역 성공: {translated_text[:50]}...")
+                    logger.info("번역 작업 완료.")
+
                 except Exception as e:
-                    logger.error(f"번역 API 호출 오류: {e}")
+                    logger.error(f"번역 API 호출 병렬 처리 중 오류: {e}")
                     translated_text = "번역 중 오류가 발생했습니다."
 
+            # --- 3. 결과 종합 및 반환 ---
+            self._update_conversation_history(session_id, user_message, ai_message)
 
-            # 👈 [FIX 3/3] 최종 결과에 번역된 텍스트 포함
             return {
                 "success": True,
                 "ai_message": ai_message,
-                "translated_text": translated_text, # 번역 결과 추가
-                "feedback": feedback,
-                "tokens_used": response.usage.total_tokens,
-                "model": "gpt-4",
+                "translated_text": translated_text,
+                "feedback": await self._analyze_user_input(user_message, ai_message, language, difficulty),
+                "tokens_used": main_response.usage.total_tokens,
+                "model": "gpt-4-turbo",
             }
 
         except Exception as e:
-            logger.error(f"GPT-4 요청 오류: {e}")
-            return {
-                "success": False,
-                "error": f"AI 응답 생성 중 오류: {str(e)}",
-                "fallback": True,
-            }
+            logger.error(f"GPT-4-Turbo 요청 오류: {e}")
+            return {"success": False, "error": f"AI 응답 생성 중 오류: {str(e)}", "fallback": True}
 
 
     def _get_system_prompt(self, situation: str, language: str, difficulty: str) -> str:
@@ -297,37 +279,41 @@ L'utilisateur apprend le français, donc :
 
 Your response MUST strictly follow this format, with no exceptions:
 
-1.  **In-Character Response:** [First, provide ONLY your natural, in-character conversational reply. If the user's message is completely out of context, respond with a confused but polite message like "I'm sorry, I don't quite understand." or "Could you repeat that?"]
+1.  **In-Character Response:** [First, provide ONLY your natural, in-character conversational reply.]
 2.  **Separator:** After your reply, you MUST insert a single blank line, then this exact separator line, then another single blank line. The separator is:
     ======== Recommended ========
-3.  **Feedback (in Korean):** Below the separator, analyze the user's last message and provide feedback in KOREAN.
+3.  **Feedback JSON (in Korean):** Below the separator, analyze the user's last message and provide a JSON object with feedback in KOREAN.
     - **First, check for contextual relevance.** Is the user's message appropriate for the current '{situation}' situation?
     - **If the message is NOT relevant:**
-        - Start with a "상황 피드백:" section.
-        - Explain in Korean why the user's message is not suitable for the current situation (e.g., "• '탑승권'이라는 단어는 공항에서 사용하는 말이에요. 지금은 식당 상황입니다.").
-        - Do NOT provide grammar feedback or recommended expressions.
+        - The JSON object MUST contain two keys: "상황 피드백" and "추천 상황".
+        - "상황 피드백": Explain in Korean why the user's message is not suitable.
+        - "추천 상황": Analyze the user's words. The value for this key MUST be one of the following strings: ["airport", "restaurant", "hotel", "street"]. If the user's words do not clearly match any of these four options, the value MUST be null.
     - **If the message IS relevant:**
-        - Start with a "문법 피드백:" section. If there are grammatical errors, briefly explain them and provide the corrected sentence. If the sentence is perfect, provide an encouraging message like "• 문법적으로 완벽한 문장입니다!".
-        - Follow with a "추천 표현:" section. Suggest 1-2 alternative, natural phrases (in the original language) that could also be used in this situation, and add a brief Korean translation in parentheses.
+        - The JSON object MUST contain two keys: "문법 피드백" and "추천 표현".
+        - "문법 피드백": If there are errors, explain them and provide the corrected sentence. If perfect, provide an encouraging message.
+        - "추천 표현": Suggest 1-2 alternative, natural phrases (in the original language) with a brief Korean translation.
 
 --- EXAMPLE OUTPUT (Irrelevant) ---
 I'm sorry, I don't quite understand. Are you ready to order?
 
 ======== Recommended ========
 
-상황 피드백:
-• '탑승권(boarding pass)'은 공항에서 사용하는 단어입니다. 지금은 식당에서 주문하는 상황이에요.
+{{
+    "상황 피드백": "• '탑승권(boarding pass)'은 공항에서 사용하는 단어입니다. 지금은 식당에서 주문하는 상황이에요.",
+    "추천 상황": "airport"
+}}
 
 --- EXAMPLE OUTPUT (Relevant) ---
 Of course, I can help with that. Your gate is B52, located in the next concourse.
 
 ======== Recommended ========
 
-문법 피드백:
-• "I looking for..." 대신 "I am looking for..." 또는 "I'm looking for..."가 올바른 표현입니다.
-
-추천 표현:
-• "Could you tell me where gate B52 is?" (B52번 게이트가 어디인지 알려주시겠어요?)
+{{
+    "문법 피드백": "• \\"I looking for...\\" 대신 \\"I am looking for...\\" 또는 \\"I'm looking for...\\"가 올바른 표현입니다.",
+    "추천 표현": [
+        "Could you tell me where gate B52 is? (B52번 게이트가 어디인지 알려주시겠어요?)"
+    ]
+}}
 ---
 """
 
