@@ -132,15 +132,15 @@ class PronunciationDataService:
             return {}
 
         try:
-            # 전체 세션 수
-            sessions_response = self.supabase.table('pronunciation_sessions').select(
+            # ▼▼▼ [수정 1] await 추가 ▼▼▼
+            sessions_response = await self.supabase.table('pronunciation_sessions').select(
                 'id', count='exact'
             ).eq('user_id', user_id).execute()
 
             total_sessions = sessions_response.count
 
-            # 평균 점수 조회
-            scores_response = self.supabase.table('pronunciation_sessions').select(
+            # ▼▼▼ [수정 2] await 추가 ▼▼▼
+            scores_response = await self.supabase.table('pronunciation_sessions').select(
                 '''
                 pronunciation_analysis_results (
                     overall_score,
@@ -159,7 +159,6 @@ class PronunciationDataService:
                         for result in session['pronunciation_analysis_results']:
                             scores.append(result)
 
-            # 평균 계산
             if scores:
                 avg_scores = {
                     'overall_score': sum(s['overall_score'] for s in scores) / len(scores),
@@ -169,16 +168,10 @@ class PronunciationDataService:
                     'fluency_score': sum(s['fluency_score'] for s in scores) / len(scores)
                 }
             else:
-                avg_scores = {
-                    'overall_score': 0,
-                    'pitch_score': 0,
-                    'rhythm_score': 0,
-                    'stress_score': 0,
-                    'fluency_score': 0
-                }
+                avg_scores = { 'overall_score': 0, 'pitch_score': 0, 'rhythm_score': 0, 'stress_score': 0, 'fluency_score': 0 }
 
-            # 언어별 연습 분포
-            language_response = self.supabase.table('pronunciation_sessions').select(
+            # ▼▼▼ [수정 3] await 추가 ▼▼▼
+            language_response = await self.supabase.table('pronunciation_sessions').select(
                 'language'
             ).eq('user_id', user_id).execute()
 
