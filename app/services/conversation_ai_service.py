@@ -232,6 +232,22 @@ class EnhancedConversationService:
     ) -> Dict[str, Any]:
         """사용자 메시지 처리 (데이터 수집 포함)"""
 
+        # 음성 인식 결과가 비어있거나 너무 짧으면, 한국어로 말한 것으로 간주하고 구체적인 오류 메시지 반환
+        if not user_message or len(user_message.strip()) < 2:
+            session_config = self.openai_sessions.get(session_id) or self.current_scenarios.get(session_id)
+            target_language_code = session_config.get('language', 'en') if session_config else 'en'
+
+            # 언어 코드에 맞는 표시 이름 찾기
+            lang_map = {'en': '영어', 'ja': '일본어', 'zh': '중국어', 'fr': '프랑스어', 'ko': '한국어'}
+            target_language_name = lang_map.get(target_language_code, '학습 언어')
+
+            # 학습 언어가 한국어가 아닌데, 음성 인식이 실패한 경우
+            if target_language_code != 'ko':
+                return {
+                    "success": False,
+                    "error": f"음성을 인식하지 못했습니다. 학습 언어({target_language_name})로 말씀해주세요."
+                }
+
         # 응답 시간 측정 시작
         start_time = time.time()
         self.response_start_times[session_id] = start_time
