@@ -310,45 +310,38 @@ class QuickStartLanguageAPI:
         self.is_initialized = False
 
     async def initialize_datasets(self):
-        """무료 데이터셋 초기화 (비동기 방식으로 최적화)"""
+        """(수정됨) 안정적인 URL 소스에서만 데이터셋을 초기화합니다."""
         if self.is_initialized:
             return
 
         logger.info("📥 무료 어휘 데이터 다운로드 중...")
 
-        # 공개 어휘 목록 URL들
+        # 문제가 되는 oxford_3000 URL을 목록에서 제거합니다.
         vocab_urls = {
             "common_words": "https://raw.githubusercontent.com/first20hours/google-10000-english/master/20k.txt",
-            "oxford_3000": "https://raw.githubusercontent.com/hackergrrl/oxford-3000/master/oxford-3000.json"
         }
 
-        # 비동기 클라이언트를 생성
         async with httpx.AsyncClient() as client:
-            # 각 URL에 대한 요청 작업을 리스트에 담습니다.
-            tasks = {name: client.get(url, timeout=10) for name, url in vocab_urls.items()}
-
-            # 모든 요청을 동시에 보내고 응답을 기다립니다.
-            responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-            # 응답 결과를 순서대로 처리
-            for (name, response) in zip(tasks.keys(), responses):
-                if isinstance(response, Exception):
-                    logger.error(f"❌ {name} 오류: {response}")
-                    continue
-
-                if response.status_code == 200:
-                    try:
-                        if name == "oxford_3000":
-                            self.vocabulary_cache[name] = response.json()
-                        else:
-                            words = response.text.strip().split('\n')
-                            self.vocabulary_cache[name] = [word.strip().lower() for word in words if word.strip()]
-
+            for name, url in vocab_urls.items():
+                try:
+                    response = await client.get(url, timeout=10)
+                    if response.status_code == 200:
+                        words = response.text.strip().split('\n')
+                        self.vocabulary_cache[name] = [word.strip().lower() for word in words if word.strip()]
                         logger.info(f"✅ {name}: {len(self.vocabulary_cache[name])} 단어")
-                    except Exception as e:
-                        logger.error(f"❌ {name} 데이터 처리 오류 : {e}")
-                else:
-                    logger.warning(f"❌ {name} 다운로드 실패 : {response.status_code}")
+                    else:
+                        logger.warning(f"❌ {name} 다운로드 실패 : {response.status_code}")
+                except Exception as e:
+                    logger.error(f"❌ {name} 데이터 처리 오류 : {e}")
+
+        # common_words 로드 실패 시를 대비한 기본값은 그대로 유지합니다.
+        if not self.vocabulary_cache.get("common_words"):
+            self.vocabulary_cache["common_words"] = [
+                "the", "be", "to", "of", "and", "a", "in", "that", "have", "i"
+            ]
+            logger.info("📝 기본 어휘 목록 사용")
+
+        self.is_initialized = True
 
         # 기본 어휘 목록이 없으면 하드코딩된 기본값 사용
         if not self.vocabulary_cache.get("common_words"):
@@ -468,22 +461,17 @@ class QuickStartLanguageAPI:
         return questions
 
     async def _get_level_words(self, level: str) -> List[str]:
-        """특정 레벨의 단어들 추출"""
+        """(수정됨) 특정 레벨의 단어들을 common_words 목록에서 추출합니다."""
 
-        # oxford_3000 단어 목록이 있으면 우선적으로 사용
-        words_source = self.vocabulary_cache.get("oxford_3000") or self.vocabulary_cache.get("common_words")
+        # oxford_3000을 확인하는 로직을 제거하고 common_words만 사용합니다.
+        words_source = self.vocabulary_cache.get("common_words")
 
         if not words_source:
             return ["important", "necessary", "possible", "available", "comfortable"]
 
-        # 레벨별 단어 범위
         ranges = {
-            "A1": (0, 500),
-            "A2": (500, 1000),
-            "B1": (1000, 2000),
-            "B2": (2000, 4000),
-            "C1": (4000, 8000),
-            "C2": (8000, 12000)
+            "A1": (0, 500), "A2": (500, 1000), "B1": (1000, 2000),
+            "B2": (2000, 4000), "C1": (4000, 8000), "C2": (8000, 12000)
         }
 
         start, end = ranges.get(level, (1000, 2000))
@@ -493,7 +481,6 @@ class QuickStartLanguageAPI:
         if start < len(words_source):
             level_words = words_source[start:end]
 
-        # 단어가 부족할 경우, 리스트 뒷부분에서 가져옴
         if len(level_words) < 5:
             level_words.extend(words_source[-50:])
 
@@ -1313,34 +1300,48 @@ class LevelTestService:
         return question
 
     async def submit_answer(self, session_id: str, question_id: str, answer: str) -> Dict:
-        """답변 제출 및 처리 (테스트 종료 로직 제거)"""
+        """답변 제출 및 처리 (미니 테스트 로직 수정)"""
         try:
             if session_id not in self.active_sessions:
                 return {"success": False, "error": "유효하지 않은 세션입니다."}
 
             session = self.active_sessions[session_id]
 
-            # 답변 평가
+            # 1. 답변 평가 및 세션 업데이트 (기존과 동일)
             evaluation = await self._evaluate_answer(question_id, answer, session)
             session["responses"].append(evaluation)
-            session["current_question"] += 1
+            session["current_question"] += 1 # 답변한 문제 수 1 증가
 
-            # 스킬별 점수 업데이트
             skill = evaluation["skill"]
             session["skill_scores"][skill].append(evaluation["score"])
 
-            # 레벨 추정 업데이트
             await self._update_level_estimate(session)
 
+            # --- 2. [핵심 수정] 다음 문제 유형 결정 로직 ---
             next_skill = ""
             if session.get("is_mini_test"):
-                current_server_question_index = session["current_question"]
-                skills_order = session["mini_test_skills_order"]
-                next_skill_index = (current_server_question_index - 1) % len(skills_order)
-                next_skill = skills_order[next_skill_index]
+                # 현재 답변한 문제의 수가 전체 문제 수보다 적을 때만 다음 문제 생성
+                if session["current_question"] < session["total_questions"]:
+                    # 'current_question'은 방금 답변한 문제의 수이므로,
+                    # 이는 곧 다음에 출제할 문제의 인덱스와 같습니다. (0-based)
+                    next_skill_index = session["current_question"]
+                    skills_order = session["mini_test_skills_order"]
+                    next_skill = skills_order[next_skill_index]
+                # 마지막 문제에 답한 경우, next_skill은 빈 문자열로 유지됩니다.
             else:
+                # 일반 테스트의 경우 기존 로직 사용
                 next_skill = self._determine_next_skill(session)
 
+            # --- 3. [핵심 수정] 테스트 종료 조건 확인 ---
+            # 마지막 문제에 대한 답변이 제출되었는지 확인합니다.
+            if session["current_question"] >= session["total_questions"]:
+                return {
+                    "success": True,
+                    "status": "completed", # '상태'를 'completed'로 변경
+                    "final_result_url": f"/api/level-test/complete?session_id={session_id}"
+                }
+
+            # --- 4. 다음 문제 생성 및 반환 (기존과 동일) ---
             next_level = session["estimated_level"]
             next_question = await self._generate_unique_question(session, next_skill, next_level)
 
