@@ -50,56 +50,40 @@ class SpeechRecognitionService:
             return None
 
     def _recognize_audio_data(self, audio_data: bytes, language: str) -> Optional[str]:
-        """실제 음성 인식 처리 (동기) - 다양한 오디오 형식 지원"""
-
+        """(수정됨) M4A 오디오 형식을 직접 처리하여 음성을 인식합니다."""
         try:
-            # 먼저 WAV로 시도
-            try:
-                with sr.AudioFile(io.BytesIO(audio_data)) as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                    audio = self.recognizer.record(source)
+            # 1. 전달받은 오디오 데이터를 바로 M4A 형식으로 로드합니다.
+            logger.info("M4A 형식으로 오디오 데이터 직접 처리 시도...")
+            m4a_audio = AudioSegment.from_file(io.BytesIO(audio_data), format="m4a")
 
-                text = self.recognizer.recognize_google(
-                    audio,
-                    language=language
-                )
+            # 2. 음성 인식을 위해 WAV 형식으로 메모리 내에서 변환합니다.
+            wav_buffer = io.BytesIO()
+            m4a_audio.export(wav_buffer, format="wav")
+            wav_buffer.seek(0)
 
-                logger.info(f"음성 인식 성공 (WAV): {text[:50]}...")
-                return text
+            # 3. 변환된 WAV 데이터로 음성 인식을 진행합니다.
+            with sr.AudioFile(wav_buffer) as source:
+                # 주변 소음 수준을 오디오 파일 앞부분으로 파악 (0.5초)
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = self.recognizer.record(source)
 
-            except Exception as wav_error:
-                # WAV 실패시 M4A로 시도
-                logger.info(f"WAV 형식 실패, M4A로 재시도: {wav_error}")
+            text = self.recognizer.recognize_google(
+                audio,
+                language=language
+            )
 
-                # M4A 형식으로 로드
-                m4a_audio = AudioSegment.from_file(io.BytesIO(audio_data), format="m4a")
-
-                # WAV 형식으로 변환
-                wav_buffer = io.BytesIO()
-                m4a_audio.export(wav_buffer, format="wav")
-                wav_buffer.seek(0)
-
-                # 변환된 WAV 데이터 처리
-                with sr.AudioFile(wav_buffer) as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                    audio = self.recognizer.record(source)
-
-                text = self.recognizer.recognize_google(
-                    audio,
-                    language=language
-                )
-
-                logger.info(f"음성 인식 성공 (M4A→WAV): {text[:50]}...")
-                return text
+            logger.info(f"음성 인식 성공 (M4A 처리): {text[:50]}...")
+            return text
 
         except sr.UnknownValueError:
-            logger.warning("음성을 인식할 수 없습니다")
-            return None
+            logger.warning("음성을 인식할 수 없습니다. (Google Speech Recognition)")
+            return None # 실패 시 None을 반환하여 AI가 구체적인 오류 메시지를 생성하도록 유도
         except sr.RequestError as e:
-            logger.error(f"Google Speech Recognition API 오류: {e}")
+            logger.error(f"Google Speech Recognition API 요청 오류: {e}")
             return None
         except Exception as e:
-            logger.error(f"음성 처리 오류: {e}")
+            # pydub이 지원하지 않는 형식이거나 파일이 손상된 경우 등
+            logger.error(f"오디오 처리 중 심각한 오류 발생: {e}")
             return None
     
     async def recognize_from_microphone(
