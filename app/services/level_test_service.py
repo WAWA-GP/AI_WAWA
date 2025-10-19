@@ -14,6 +14,8 @@ import random
 import httpx
 from datetime import datetime
 from typing import Dict, List, Optional
+from datasets import load_dataset, DatasetDict
+import pandas as pd
 
 from openai import OpenAI
 import os
@@ -308,6 +310,7 @@ class QuickStartLanguageAPI:
         # 미리 다운로드한 어휘 목록들
         self.vocabulary_cache = {}
         self.is_initialized = False
+        self.grammar_dataset = None # 데이터셋을 저장할 변수 추가
 
     async def initialize_datasets(self):
         """(수정됨) 안정적인 URL 소스에서만 데이터셋을 초기화합니다."""
@@ -355,7 +358,51 @@ class QuickStartLanguageAPI:
             ]
             logger.info("📝 기본 어휘 목록 사용")
 
+        try:
+            logger.info("📥 Hugging Face 문법 데이터셋 다운로드 및 전처리 중...")
+            dataset: DatasetDict = load_dataset("Owishiboo/grammar-correction", split='train')
+
+            df = dataset.to_pandas()
+            df = df[['input', 'target']].dropna().drop_duplicates()
+            df.rename(columns={'target': 'output'}, inplace=True)
+
+            # [신규] 각 문장 쌍(row)에 대해 CEFR 레벨을 미리 계산하여 'level' 컬럼 추가
+            # apply 함수를 사용하여 _estimate_sentence_level 함수를 각 'output' 문장에 적용
+            df['level'] = df['output'].apply(self._estimate_sentence_level)
+
+            self.grammar_dataset = df.to_dict('records')
+
+            # 레벨별 문장 개수 통계 출력
+            level_counts = df['level'].value_counts().to_dict()
+            logger.info(f"✅ 문법 데이터셋 전처리 완료: 총 {len(self.grammar_dataset)}개. 레벨 분포: {level_counts}")
+
+        except Exception as e:
+            logger.error(f"❌ Hugging Face 데이터셋 로드 실패: {e}", exc_info=True)
+            self.grammar_dataset = []
+
         self.is_initialized = True
+
+    def _estimate_sentence_level(self, sentence: str) -> str:
+        """문장에 포함된 단어들의 빈도를 기반으로 문장의 CEFR 레벨을 추정합니다."""
+        words = sentence.lower().split()
+        if not words:
+            return "A1"
+
+        max_rank = 0
+        common_words_list = self.vocabulary_cache.get("common_words", [])
+
+        # 문장에서 가장 어려운 단어(등수가 가장 낮은 단어)의 rank를 찾습니다.
+        for word in words:
+            try:
+                rank = common_words_list.index(word.strip(".,?!")) + 1
+                if rank > max_rank:
+                    max_rank = rank
+            except ValueError:
+                # 목록에 없는 단어는 C2 수준으로 간주
+                max_rank = max(max_rank, 20000)
+
+        # 가장 어려운 단어의 rank를 기준으로 문장 전체의 레벨을 결정합니다.
+        return self._rank_to_cefr(max_rank)
 
     async def get_word_cefr_level(self, word: str) -> Dict:
         """단어의 CEFR 레벨 결정"""
@@ -606,52 +653,48 @@ class QuickStartLanguageAPI:
         }
 
     async def _create_grammar_question(self, word: str, level: str) -> Dict:
-        """문법 문제 생성 (수정: 전역 문제 목록을 사용하도록 변경)"""
+        """
+        [수정] 항상 GRAMMAR_TEMPLATES에 정의된 '빈칸 채우기' 문제만 출제하도록 로직을 고정합니다.
+        """
         try:
-            # 영어('en') 문법 템플릿 목록을 가져옵니다.
+            # 1. 'en' (영어) 문법 템플릿 목록을 가져옵니다.
             lang_templates = GRAMMAR_TEMPLATES.get("en", {})
 
-            # 해당 레벨의 문제 목록을 가져오되, 없으면 하위 레벨에서 찾습니다.
+            # 2. 사용자의 현재 레벨에 맞는 문제 목록을 찾습니다.
             level_order = ["C2", "C1", "B2", "B1", "A2", "A1"]
             templates_for_level = []
             try:
                 current_index = level_order.index(level)
+                # 현재 레벨부터 A1 레벨까지 순서대로 내려가며 문제가 있는지 확인합니다.
                 for i in range(current_index, len(level_order)):
                     level_to_try = level_order[i]
                     if level_to_try in lang_templates and lang_templates[level_to_try]:
                         templates_for_level = lang_templates[level_to_try]
+                        logger.info(f"'{level}'에 대한 문제로 '{level_to_try}' 레벨의 템플릿을 사용합니다.")
                         break
             except ValueError:
-                pass
+                pass # 레벨이 A1~C2가 아닐 경우 그냥 넘어갑니다.
 
-            # 최종적으로도 없으면 A1 레벨 문제를 사용합니다.
+            # 3. 만약 해당 레벨 및 하위 레벨에 문제가 없다면, A1 문제를 기본값으로 사용합니다.
             if not templates_for_level:
                 templates_for_level = lang_templates.get("A1", [])
+                logger.warning(f"'{level}' 레벨 템플릿을 찾지 못해 A1 템플릿을 사용합니다.")
 
             if not templates_for_level:
-                raise Exception(f"No grammar templates found for level {level} or any fallback.")
+                raise Exception("A1 레벨의 기본 문법 템플릿조차 찾을 수 없습니다.")
 
+            # 4. 선택된 문제 목록에서 무작위로 하나를 골라 문제를 생성합니다.
             chosen_template = random.choice(templates_for_level)
 
-            # 선택지와 정답 목록을 합쳐서 무작위로 섞기
             options_list = list(chosen_template["options"].values())
             correct_answer_value = chosen_template["options"][chosen_template["correct"]]
 
-            # 만약 정답이 이미 options_list에 있다면 그대로 사용, 없다면 추가
-            if correct_answer_value not in options_list:
-                # 이 경우는 데이터 포맷이 다르므로 다른 방식으로 처리
-                options_list = list(chosen_template["options"].values())
-
             random.shuffle(options_list)
-
-            # 섞인 목록에서 정답이 몇 번째에 있는지 확인 (A=0, B=1, ...)
             correct_answer_char = chr(65 + options_list.index(correct_answer_value))
-
-            # 최종 선택지 딕셔너리 생성
             options = {chr(65 + i): opt for i, opt in enumerate(options_list)}
 
             return {
-                "question_id": f"grammar_{level}_{word}_{random.randint(1000, 9999)}",
+                "question_id": f"grammar_template_{level}_{random.randint(1000, 9999)}",
                 "skill": "grammar",
                 "level": level,
                 "question": chosen_template["template"],
@@ -659,12 +702,12 @@ class QuickStartLanguageAPI:
                 "correct_answer": correct_answer_char,
                 "explanation": f"이 문제는 '{chosen_template['point']}' 문법 규칙을 테스트합니다.",
                 "grammar_point": chosen_template['point'],
-                "source": "global_grammar_templates_v2" # 소스 버전 업데이트
+                "source": "local_grammar_templates_v3" # 소스 버전 업데이트
             }
         except Exception as e:
-            logger.error(f"문법 문제 생성 중 오류 발생: {e}")
+            logger.error(f"빈칸 채우기 문법 문제 생성 중 오류 발생: {e}")
+            # 어떤 방식도 실패하면 간단한 대체 문제를 반환합니다.
             return self._get_fallback_question("grammar", level, random.randint(1, 100))
-
 
     async def _create_reading_question(self, level: str) -> Dict:
         """읽기 문제 생성 (수정: 전역 문제 목록을 사용하도록 변경)"""
