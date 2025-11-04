@@ -211,9 +211,9 @@ L'utilisateur apprend le français, donc :
             conversation = self._get_conversation_history(session_id)
             messages = [{"role": "system", "content": system_prompt}] + conversation + [{"role": "user", "content": user_message}]
 
-            logger.info(f"GPT-4-Turbo 요청 시작: {session_id}")
+            logger.info(f"GPT-4o: {session_id}")
             main_response_task = self.client.chat.completions.create(
-                model="gpt-4-turbo",  # ◀◀◀ [속도 개선] gpt-4 보다 훨씬 빠른 gpt-4-turbo 모델 사용
+                model="gpt-4o",
                 messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
@@ -222,7 +222,7 @@ L'utilisateur apprend le français, donc :
             # --- 2. 메인 AI 응답과 번역을 동시에 실행 ---
             main_response = await main_response_task
             ai_message = main_response.choices[0].message.content
-            logger.info(f"GPT-4-Turbo 응답 수신: {session_id}")
+            logger.info(f"GPT-4o 응답 수신: {session_id}")
 
             translated_text = None
             if translate_to and ai_message:
@@ -232,7 +232,7 @@ L'utilisateur apprend le français, donc :
 
                     # 번역 작업을 비동기 태스크로 만듦
                     translation_task = self.client.chat.completions.create(
-                        model="gpt-3.5-turbo",
+                        model="gpt-4o",
                         messages=[
                             {"role": "system", "content": f"You are a helpful translator. Translate the following text to {translate_to}."},
                             {"role": "user", "content": conversational_part}
@@ -259,11 +259,11 @@ L'utilisateur apprend le français, donc :
                 "translated_text": translated_text,
                 "feedback": await self._analyze_user_input(user_message, ai_message, language, difficulty),
                 "tokens_used": main_response.usage.total_tokens,
-                "model": "gpt-4-turbo",
+                "model": "gpt-4o",
             }
 
         except Exception as e:
-            logger.error(f"GPT-4-Turbo 요청 오류: {e}")
+            logger.error(f"GPT-4o 요청 오류: {e}")
             return {"success": False, "error": f"AI 응답 생성 중 오류: {str(e)}", "fallback": True}
 
 
@@ -386,7 +386,7 @@ Of course, I can help with that. Your gate is B52, located in the next concourse
 """
 
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",  # 피드백은 더 빠른 모델 사용
+                model="gpt-4o",  # 피드백은 더 빠른 모델 사용
                 messages=[{"role": "user", "content": feedback_prompt}],
                 max_tokens=300,
                 temperature=0.3,
@@ -447,7 +447,7 @@ The message should:
 Respond in {language} only.
 """
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=300,
                 temperature=0.7,
@@ -459,7 +459,7 @@ Respond in {language} only.
             if translate_to and original_text:
                 try:
                     translation_response = await self.client.chat.completions.create(
-                        model="gpt-3.5-turbo",
+                        model="gpt-4o",
                         messages=[
                             {"role": "system", "content": f"You are a helpful translator. Translate the following text to {translate_to}."},
                             {"role": "user", "content": original_text}
@@ -512,7 +512,7 @@ Respond in {language} only.
 
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o",
                 messages=[
                     {"role": "user", "content": "Hello, this is a connection test."}
                 ],
@@ -521,7 +521,7 @@ Respond in {language} only.
 
             return {
                 "connected": True,
-                "model": "gpt-3.5-turbo",
+                "model": "gpt-4o",
                 "response": response.choices[0].message.content,
             }
 
@@ -586,7 +586,7 @@ Respond in {language} only.
 
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4-turbo",  # JSON 모드를 지원하는 최신 모델 사용 권장
+                model="gpt-4o",  # JSON 모드를 지원하는 최신 모델 사용 권장
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant designed to output JSON."},
                     {"role": "user", "content": prompt}
@@ -627,7 +627,7 @@ Respond in {language} only.
 
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4-turbo",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant designed to output JSON."},
                     {"role": "user", "content": prompt}
